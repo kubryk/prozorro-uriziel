@@ -1,15 +1,17 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProzorroService } from '../prozorro/prozorro.service';
+import { TENDER_QUEUE_NAME } from '../constants';
 
 @Injectable()
-export class SyncService implements OnApplicationBootstrap {
+export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(SyncService.name);
   private isSyncing = false;
   private addedCount = 0;
+  private statsInterval: ReturnType<typeof setInterval>;
   private readonly incompleteSyncStatuses = ['PARTIAL', 'FAILED'] as const;
   private readonly mainQueueFailedJobsToKeep = (() => {
     const parsed = Number.parseInt(
@@ -34,10 +36,10 @@ export class SyncService implements OnApplicationBootstrap {
   constructor(
     private readonly prisma: PrismaService,
     private readonly prozorroApi: ProzorroService,
-    @InjectQueue('tender-processor') private readonly tenderQueue: Queue,
+    @InjectQueue(TENDER_QUEUE_NAME) private readonly tenderQueue: Queue,
   ) {
     // Print sync stats every 30 seconds
-    setInterval(async () => {
+    this.statsInterval = setInterval(async () => {
       if (process.env.APP_ROLE === 'WORKER') return;
       try {
         const [counts, incompleteTendersCount] = await Promise.all([
@@ -64,6 +66,10 @@ export class SyncService implements OnApplicationBootstrap {
 
   async onApplicationBootstrap() {
     this.logger.log('SyncService initialized, checking initial offset...');
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.statsInterval);
   }
 
   private buildMainJobId(tender: {
@@ -146,7 +152,7 @@ export class SyncService implements OnApplicationBootstrap {
     );
   }
 
-  @Cron('* * * * * *') // Run every 1 second
+  @Cron('*/6 * * * * *') // Run every 6 seconds (~500 tenders per 30s)
   async handleSync() {
     // If this instance is only a worker, do not fetch new pages
     if (process.env.APP_ROLE === 'WORKER') return;
@@ -206,13 +212,18 @@ export class SyncService implements OnApplicationBootstrap {
 
         this.addedCount += data.length;
 
-        // 4. Update local tracker and Database offset
+        // 4. Update local tracker and Database offset (optimistic locking via updatedAt)
         currentOffset = nextPageOffset;
         if (currentOffset) {
-          await this.prisma.syncState.update({
-            where: { id: 1 },
+          const updated = await this.prisma.syncState.updateMany({
+            where: { id: 1, updatedAt: syncState!.updatedAt },
             data: { lastOffset: currentOffset },
           });
+          if (updated.count === 0) {
+            this.logger.warn('Sync state was modified by another instance, skipping this run');
+            break;
+          }
+          syncState = await this.prisma.syncState.findUnique({ where: { id: 1 } });
         }
 
         pagesProcessed++;
@@ -220,8 +231,9 @@ export class SyncService implements OnApplicationBootstrap {
         // If the page was not full, we've likely caught up to real-time
         if (data.length < 100) break;
       }
-    } catch (error) {
-      this.logger.error('Error during synchronization loop', error.stack);
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error('Error during synchronization loop', err.stack);
     } finally {
       this.isSyncing = false;
     }
@@ -253,15 +265,17 @@ export class SyncService implements OnApplicationBootstrap {
         // Reuse or recreate the retry job safely to avoid duplicate-job stalls.
         await this.queueRetryForTender(tender);
 
-        // Reset status to FULL so it's not picked up again until processed
-        // If it fails again, the processor will flip it back to PARTIAL or FAILED
+        // Mark as RETRYING so it's not picked up again by this cron,
+        // but won't be confused with successfully synced (FULL) tenders.
+        // Processor will set FULL on success or PARTIAL/FAILED on error.
         await this.prisma.tender.update({
           where: { id: tender.id },
-          data: { syncStatus: 'FULL' }
+          data: { syncStatus: 'RETRYING' }
         });
       }
-    } catch (error) {
-      this.logger.error('Error in retryPartialTenders cron', error.stack);
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error('Error in retryPartialTenders cron', err.stack);
     }
   }
 }

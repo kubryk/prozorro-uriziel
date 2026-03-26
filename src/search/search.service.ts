@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { TENDER_QUEUE_NAME } from '../constants';
 
 export type EdrpouRole = 'customer' | 'supplier';
 type TenderRoleFilter = EdrpouRole | EdrpouRole[];
@@ -142,7 +143,7 @@ function buildContractOrderBy(
 export class SearchService {
     constructor(
         private readonly prisma: PrismaService,
-        @InjectQueue('tender-processor') private readonly tenderQueue: Queue,
+        @InjectQueue(TENDER_QUEUE_NAME) private readonly tenderQueue: Queue,
     ) { }
 
     /**
@@ -351,7 +352,7 @@ export class SearchService {
             };
         }
 
-        const [data, total, relatedTenderGroups] = await Promise.all([
+        const [data, total, relatedTenderTotal] = await Promise.all([
             this.prisma.contract.findMany({
                 where,
                 skip,
@@ -371,29 +372,36 @@ export class SearchService {
                 },
             }),
             this.prisma.contract.count({ where }),
-            this.prisma.contract.groupBy({
-                by: ['tenderId'],
-                where,
-                _count: true,
-            }),
+            this.countDistinctTenders(where),
         ]);
 
         return {
             data,
             total,
-            relatedTenderTotal: relatedTenderGroups.length,
+            relatedTenderTotal,
             skip,
             take: safeTake,
         };
     }
 
+    private async countDistinctTenders(where: Prisma.ContractWhereInput): Promise<number> {
+        // Use Prisma findMany + distinct as baseline; for very large result sets
+        // consider replacing with raw SQL: SELECT COUNT(DISTINCT "tenderId") ...
+        const rows = await this.prisma.contract.findMany({
+            where,
+            distinct: ['tenderId'],
+            select: { tenderId: true },
+        });
+        return rows.length;
+    }
+
     async getStats() {
-        const [tenderCount, contractCount, syncState, incompleteTenderCount, queueCounts] = await Promise.all([
+        const results = await Promise.allSettled([
             this.prisma.tender.count(),
             this.prisma.contract.count(),
             this.prisma.syncState.findUnique({ where: { id: 1 } }),
             this.prisma.tender.count({
-                where: { syncStatus: { in: ['PARTIAL', 'FAILED'] } },
+                where: { syncStatus: { in: ['PARTIAL', 'FAILED', 'RETRYING'] } },
             }),
             this.tenderQueue.getJobCounts(
                 'waiting',
@@ -403,6 +411,16 @@ export class SearchService {
                 'waiting-children',
             ),
         ]);
+
+        const val = <T>(r: PromiseSettledResult<T>, fallback: T): T =>
+            r.status === 'fulfilled' ? r.value : fallback;
+
+        const tenderCount = val(results[0], 0);
+        const contractCount = val(results[1], 0);
+        const syncState = val(results[2], null);
+        const incompleteTenderCount = val(results[3], 0);
+        const queueCounts = val(results[4], {} as Record<string, number>);
+
         const pendingJobs =
             (queueCounts.waiting || 0) +
             (queueCounts.active || 0) +

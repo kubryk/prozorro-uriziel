@@ -1,9 +1,18 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ProzorroService } from '../../prozorro/prozorro.service';
+import {
+  ProzorroTenderDetails,
+  ProzorroContractDetails,
+  ProzorroLot,
+  ProzorroBid,
+  ProzorroComplaint,
+  ProzorroItem,
+} from '../../prozorro/prozorro.types';
+import { TENDER_QUEUE_NAME } from '../../constants';
 
 const STATS_INTERVAL_MS = 30_000; // Print summary every 30 seconds
 const DEFAULT_WORKER_CONCURRENCY = 50;
@@ -20,14 +29,30 @@ function parsePositiveIntEnv(value: string | undefined, fallback: number): numbe
   return parsed;
 }
 
+/** Strip null bytes that PostgreSQL rejects */
+function sanitize(val: string | number | null | undefined): string | null {
+  if (val == null) return null;
+  return String(val).replace(/\0/g, '');
+}
+
 /** Safely parse a value to Float — Prozorro API sometimes returns numbers as strings */
-function toFloat(val: any): number | null {
+function toFloat(val: string | number | null | undefined): number | null {
   if (val == null) return null;
   const n = typeof val === 'string' ? parseFloat(val) : val;
   return isNaN(n) ? null : n;
 }
 
-@Processor('tender-processor', {
+interface ParsedComplaint {
+  id: string;
+  title: string | null;
+  description: string | null;
+  status: string | null;
+  type: string | null;
+  dateSubmitted: Date | null;
+  complaintID: string | null;
+}
+
+@Processor(TENDER_QUEUE_NAME, {
   // concurrency — скільки задач BullMQ тримає одночасно в пам'яті.
   // Реальний ліміт запитів до API — в ProzorroService (WORKER_REQUESTS_PER_SECOND)
   concurrency: parsePositiveIntEnv(
@@ -41,8 +66,9 @@ function toFloat(val: any): number | null {
     DEFAULT_WORKER_LOCK_DURATION_MS,
   ),
 })
-export class TenderProcessor extends WorkerHost {
+export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(TenderProcessor.name);
+  private statsInterval: ReturnType<typeof setInterval>;
   private readonly maxDbWriteConcurrency = parsePositiveIntEnv(
     process.env.WORKER_DB_CONCURRENCY,
     DEFAULT_WORKER_DB_CONCURRENCY,
@@ -53,6 +79,7 @@ export class TenderProcessor extends WorkerHost {
   // Aggregate counters for periodic summary
   private processedTenders = 0;
   private processedContracts = 0;
+  private processedItems = 0;
   private errorCount = 0;
   private partialCount = 0;
 
@@ -63,20 +90,25 @@ export class TenderProcessor extends WorkerHost {
     super();
 
     // Print stats summary every 30 seconds
-    setInterval(() => {
+    this.statsInterval = setInterval(() => {
       if (this.processedTenders === 0 && this.errorCount === 0) return; // nothing to report
 
       const speed = (this.processedTenders / (STATS_INTERVAL_MS / 1000)).toFixed(1);
       this.logger.log(
-        `📊 За ${STATS_INTERVAL_MS / 1000}с: оброблено ${this.processedTenders} тендерів (${speed}/с), ${this.processedContracts} контрактів | помилки: ${this.errorCount}, partial: ${this.partialCount}`,
+        `📊 За ${STATS_INTERVAL_MS / 1000}с: ${this.processedTenders} тендерів (${speed}/с), ${this.processedContracts} контрактів, ${this.processedItems} предметів | помилки: ${this.errorCount}, partial: ${this.partialCount}`,
       );
 
       // Reset counters
       this.processedTenders = 0;
       this.processedContracts = 0;
+      this.processedItems = 0;
       this.errorCount = 0;
       this.partialCount = 0;
     }, STATS_INTERVAL_MS);
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.statsInterval);
   }
 
   private async acquireDbWriteSlot(): Promise<void> {
@@ -99,6 +131,33 @@ export class TenderProcessor extends WorkerHost {
     }
   }
 
+  private async fetchContractWithRetry(
+    tenderId: string,
+    contractId: string,
+  ): Promise<ProzorroContractDetails | null> {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await this.prozorroApi.getContractDetails(tenderId, contractId);
+      } catch (contractError: any) {
+        const status = contractError?.response?.status;
+        if (status && status >= 400 && status < 500) {
+          this.logger.warn(
+            `Skipping contract ${contractId} for tender ${tenderId} (HTTP ${status}): ${contractError.message}`,
+          );
+          return null;
+        }
+        if (attempt === 3) {
+          this.logger.warn(
+            `Skipping contract ${contractId} for tender ${tenderId} after 3 attempts: ${contractError.message}`,
+          );
+          return null;
+        }
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+      }
+    }
+    return null;
+  }
+
   private async withDbWriteSlot<T>(work: () => Promise<T>): Promise<T> {
     await this.acquireDbWriteSlot();
     try {
@@ -110,33 +169,40 @@ export class TenderProcessor extends WorkerHost {
 
   async process(
     job: Job<{ tenderId: string; dateModified?: string | Date }, any, string>,
-  ): Promise<any> {
+  ): Promise<{ success: boolean; reason?: string; customers?: number; contracts?: number }> {
     const { tenderId } = job.data;
 
     try {
       const tenderDetails = await this.prozorroApi.getTenderDetails(tenderId);
 
-      if (!tenderDetails) {
-        throw new Error(`No details found for tender: ${tenderId}`);
+      if (!tenderDetails || typeof tenderDetails.id !== 'string') {
+        throw new Error(`Invalid or missing tender data for: ${tenderId}`);
+      }
+
+      if (!tenderDetails.status) {
+        this.logger.warn(`Tender ${tenderId} has no status field, skipping`);
+        return { success: false, reason: 'missing status' };
       }
 
       // Extract Customer (from procuringEntity)
       let customerEdrpou: string | null = null;
       let customerName: string | null = null;
-      if (
-        tenderDetails.procuringEntity &&
-        tenderDetails.procuringEntity.identifier &&
-        tenderDetails.procuringEntity.identifier.id
-      ) {
-        customerEdrpou = tenderDetails.procuringEntity.identifier.id;
-        customerName =
-          tenderDetails.procuringEntity.name ||
-          tenderDetails.procuringEntity.identifier.legalName ||
-          null;
+      let customerRegion: string | null = null;
+      let customerLocality: string | null = null;
+      if (tenderDetails.procuringEntity) {
+        const pe = tenderDetails.procuringEntity;
+        if (pe.identifier?.id) {
+          customerEdrpou = pe.identifier.id;
+          customerName = pe.name || pe.identifier.legalName || null;
+        }
+        if (pe.address) {
+          customerRegion = pe.address.region || null;
+          customerLocality = pe.address.locality || null;
+        }
       }
 
       // Helper to parse Prozorro dates
-      const pDate = (d: any) => d ? new Date(d) : null;
+      const pDate = (d: string | null | undefined) => d ? new Date(d) : null;
       const fallbackDateModified = job.data.dateModified
         ? new Date(job.data.dateModified)
         : new Date();
@@ -146,6 +212,69 @@ export class TenderProcessor extends WorkerHost {
       const tenderDateModified = pDate(tenderDetails.dateModified) ?? safeFallbackDateModified;
       const tenderDateCreated = pDate(tenderDetails.dateCreated) ?? tenderDateModified;
       const tenderYear = tenderDateModified.getFullYear();
+
+      // Extract Lots
+      const lots = Array.isArray(tenderDetails.lots)
+        ? tenderDetails.lots.map((lot: ProzorroLot) => ({
+            id: lot.id,
+            title: sanitize(lot.title),
+            description: sanitize(lot.description),
+            status: lot.status || null,
+            amount: toFloat(lot.value?.amount),
+            currency: lot.value?.currency || null,
+            valueAddedTaxIncluded: lot.value?.valueAddedTaxIncluded ?? null,
+          }))
+        : [];
+
+      // Extract Bids
+      const bids = Array.isArray(tenderDetails.bids)
+        ? tenderDetails.bids.map((bid: ProzorroBid) => {
+            const tenderer = bid.tenderers?.[0];
+            return {
+              id: bid.id,
+              date: pDate(bid.date),
+              status: bid.status || null,
+              amount: toFloat(bid.value?.amount),
+              currency: bid.value?.currency || null,
+              valueAddedTaxIncluded: bid.value?.valueAddedTaxIncluded ?? null,
+              bidderEdrpou: sanitize(tenderer?.identifier?.id),
+              bidderName: sanitize(tenderer?.name || tenderer?.identifier?.legalName),
+            };
+          })
+        : [];
+
+      // Extract Complaints (from tender level and awards)
+      const complaints: ParsedComplaint[] = [];
+      if (Array.isArray(tenderDetails.complaints)) {
+        for (const c of tenderDetails.complaints) {
+          complaints.push({
+            id: c.id,
+            title: sanitize(c.title),
+            description: sanitize(c.description),
+            status: c.status || null,
+            type: c.type || null,
+            dateSubmitted: pDate(c.dateSubmitted),
+            complaintID: c.complaintID || null,
+          });
+        }
+      }
+      if (Array.isArray(tenderDetails.awards)) {
+        for (const award of tenderDetails.awards) {
+          if (Array.isArray(award.complaints)) {
+            for (const c of award.complaints) {
+              complaints.push({
+                id: c.id,
+                title: sanitize(c.title),
+                description: sanitize(c.description),
+                status: c.status || null,
+                type: c.type || null,
+                dateSubmitted: pDate(c.dateSubmitted),
+                complaintID: c.complaintID || null,
+              });
+            }
+          }
+        }
+      }
 
       const contractRefs = Array.isArray(tenderDetails.contracts)
         ? tenderDetails.contracts
@@ -162,38 +291,31 @@ export class TenderProcessor extends WorkerHost {
         }
       }
 
-      // Save Contracts (with separate API call for full details)
-      let contractsCount = 0;
+      // Fetch contract details in parallel (rate limiting is handled by ProzorroService)
       let hasFailedContracts = false;
-      const contractDetailsToPersist: any[] = [];
+      const contractDetailsToPersist: ProzorroContractDetails[] = [];
       if (expectedContractIds.length > 0) {
-        for (const contractId of expectedContractIds) {
-          try {
-            // Fetch full contract details from a separate API endpoint
-            const contract = await this.prozorroApi.getContractDetails(
-              tenderId,
-              contractId,
-            );
-            if (!contract) continue;
-
-            contractDetailsToPersist.push(contract);
-          } catch (contractError) {
-            // Don't fail the entire tender if one contract has issues
+        const results = await Promise.allSettled(
+          expectedContractIds.map((contractId) => this.fetchContractWithRetry(tenderId, contractId)),
+        );
+        for (const result of results) {
+          if (result.status === 'fulfilled' && result.value) {
+            contractDetailsToPersist.push(result.value);
+          } else {
             hasFailedContracts = true;
-            this.logger.warn(
-              `Skipping contract ${contractId} for tender ${tenderId}: ${contractError.message}`,
-            );
           }
         }
       }
-      contractsCount = contractDetailsToPersist.length;
+      const contractsCount = contractDetailsToPersist.length;
 
       const tenderWriteData = {
         tenderID: tenderDetails.tenderID,
-        title: tenderDetails.title || null,
+        title: sanitize(tenderDetails.title),
+        description: sanitize(tenderDetails.description),
         status: tenderDetails.status,
         amount: toFloat(tenderDetails.value?.amount),
         currency: tenderDetails.value?.currency || null,
+        valueAddedTaxIncluded: tenderDetails.value?.valueAddedTaxIncluded ?? null,
         year: tenderYear,
         dateModified: tenderDateModified,
         dateCreated: tenderDateCreated,
@@ -203,12 +325,17 @@ export class TenderProcessor extends WorkerHost {
         enquiryPeriodEnd: pDate(tenderDetails.enquiryPeriod?.endDate),
         auctionPeriodStart: pDate(tenderDetails.auctionPeriod?.startDate),
         awardPeriodStart: pDate(tenderDetails.awardPeriod?.startDate),
-        customerEdrpou,
-        customerName,
+        mainProcurementCategory: tenderDetails.mainProcurementCategory || null,
+        procurementMethod: tenderDetails.procurementMethod || null,
+        procurementMethodType: tenderDetails.procurementMethodType || null,
+        customerEdrpou: sanitize(customerEdrpou),
+        customerName: sanitize(customerName),
+        customerRegion: sanitize(customerRegion),
+        customerLocality: sanitize(customerLocality),
         syncStatus: 'FULL' as const,
       };
 
-      const contractWrites = contractDetailsToPersist.map((contract) => {
+      const contractWrites = contractDetailsToPersist.map((contract: ProzorroContractDetails) => {
         // Support both new format (contract.value.amount) and old format (contract.amount)
         const value = contract.value || {};
         const amount = toFloat(value.amount ?? contract.amount);
@@ -233,10 +360,27 @@ export class TenderProcessor extends WorkerHost {
           supplierName = supplier.name || supplier.identifier?.legalName || null;
         }
 
+        // Extract items for this contract
+        const items = Array.isArray(contract.items)
+          ? contract.items.map((item: ProzorroItem) => ({
+              id: item.id,
+              description: sanitize(item.description),
+              quantity: toFloat(item.quantity),
+              unitName: sanitize(item.unit?.name),
+              unitCode: item.unit?.code || null,
+              classificationId: item.classification?.id || null,
+              classificationDescription: sanitize(item.classification?.description),
+              deliveryRegion: sanitize(item.deliveryAddress?.region),
+              deliveryLocality: sanitize(item.deliveryAddress?.locality),
+            }))
+          : [];
+
         return {
           id: contract.id,
           data: {
             contractID: contract.contractID || null,
+            contractNumber: sanitize(contract.contractNumber),
+            description: sanitize(contract.description),
             status: contract.status || null,
             amount,
             currency,
@@ -252,10 +396,13 @@ export class TenderProcessor extends WorkerHost {
             dateCreated: contract.dateCreated
               ? new Date(contract.dateCreated)
               : null,
-            supplierEdrpou,
-            supplierName,
+            periodStartDate: pDate(contract.period?.startDate),
+            periodEndDate: pDate(contract.period?.endDate),
+            supplierEdrpou: sanitize(supplierEdrpou),
+            supplierName: sanitize(supplierName),
             tenderId: tenderDetails.id,
           },
+          items,
         };
       });
 
@@ -267,7 +414,6 @@ export class TenderProcessor extends WorkerHost {
             }
           : { tenderId: tenderDetails.id };
 
-      const deleteResultIndex = 1 + contractWrites.length;
       const transactionOperations: Prisma.PrismaPromise<unknown>[] = [
         this.prisma.tender.upsert({
           where: { id: tenderDetails.id },
@@ -287,8 +433,71 @@ export class TenderProcessor extends WorkerHost {
             },
           }),
         ),
+        // Upsert items for each contract
+        ...contractWrites.flatMap(({ id: contractId, items }) =>
+          items.map((item) =>
+            this.prisma.item.upsert({
+              where: { id: item.id },
+              update: { ...item, contractId },
+              create: { ...item, contractId },
+            }),
+          ),
+        ),
+        // Delete stale items per contract (compare only with that contract's item IDs)
+        ...contractWrites.map(({ id: contractId, items }) => {
+          const contractItemIds = items.map((item) => item.id);
+          return this.prisma.item.deleteMany({
+            where: {
+              contractId,
+              ...(contractItemIds.length > 0
+                ? { id: { notIn: contractItemIds } }
+                : {}),
+            },
+          });
+        }),
         this.prisma.contract.deleteMany({
           where: deleteWhere,
+        }),
+        // Upsert lots/bids/complaints
+        ...lots.map((lot) =>
+          this.prisma.lot.upsert({
+            where: { id: lot.id },
+            update: { ...lot, tenderId: tenderDetails.id },
+            create: { ...lot, tenderId: tenderDetails.id },
+          }),
+        ),
+        ...bids.map((bid) =>
+          this.prisma.bid.upsert({
+            where: { id: bid.id },
+            update: { ...bid, tenderId: tenderDetails.id },
+            create: { ...bid, tenderId: tenderDetails.id },
+          }),
+        ),
+        ...complaints.map((c) =>
+          this.prisma.complaint.upsert({
+            where: { id: c.id },
+            update: { ...c, tenderId: tenderDetails.id },
+            create: { ...c, tenderId: tenderDetails.id },
+          }),
+        ),
+        // Delete stale lots/bids/complaints that no longer exist in Prozorro payload
+        this.prisma.lot.deleteMany({
+          where: {
+            tenderId: tenderDetails.id,
+            ...(lots.length > 0 ? { id: { notIn: lots.map((l) => l.id) } } : {}),
+          },
+        }),
+        this.prisma.bid.deleteMany({
+          where: {
+            tenderId: tenderDetails.id,
+            ...(bids.length > 0 ? { id: { notIn: bids.map((b) => b.id) } } : {}),
+          },
+        }),
+        this.prisma.complaint.deleteMany({
+          where: {
+            tenderId: tenderDetails.id,
+            ...(complaints.length > 0 ? { id: { notIn: complaints.map((c) => c.id) } } : {}),
+          },
         }),
       ];
 
@@ -301,25 +510,32 @@ export class TenderProcessor extends WorkerHost {
         );
       }
 
-      const transactionResults = await this.withDbWriteSlot(() =>
-        this.prisma.$transaction(transactionOperations),
-      );
-      const deletedContracts =
-        (transactionResults[deleteResultIndex] as Prisma.BatchPayload).count ?? 0;
+      // Split large transactions into batches to avoid timeouts
+      const BATCH_SIZE = 50;
+      await this.withDbWriteSlot(async () => {
+        if (transactionOperations.length <= BATCH_SIZE) {
+          await this.prisma.$transaction(transactionOperations);
+        } else {
+          // First batch: tender upsert + contracts (must be atomic)
+          const coreBatchEnd = 1 + contractWrites.length;
+          await this.prisma.$transaction(transactionOperations.slice(0, coreBatchEnd));
+          // Remaining operations in batches
+          const rest = transactionOperations.slice(coreBatchEnd);
+          for (let i = 0; i < rest.length; i += BATCH_SIZE) {
+            await this.prisma.$transaction(rest.slice(i, i + BATCH_SIZE));
+          }
+        }
+      });
 
       if (hasFailedContracts) {
         this.partialCount++;
       }
 
-      if (deletedContracts > 0) {
-        this.logger.log(
-          `Removed ${deletedContracts} stale contracts for tender ${tenderId}`,
-        );
-      }
-
       // Update aggregate counters (no per-tender log)
+      const itemsCount = contractWrites.reduce((sum, cw) => sum + cw.items.length, 0);
       this.processedTenders++;
       this.processedContracts += contractsCount;
+      this.processedItems += itemsCount;
 
       return {
         success: true,

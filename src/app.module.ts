@@ -1,6 +1,8 @@
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -12,10 +14,24 @@ import { AuthModule } from './auth/auth.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { Request, Response, NextFunction } from 'express';
+import { TENDER_QUEUE_NAME } from './constants';
+
+function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction) {
+  const apiKey = req.headers['x-api-key'];
+  if (apiKey && apiKey === process.env.API_KEY) {
+    return next();
+  }
+  res.status(401).json({ message: 'Unauthorized' });
+}
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([{
+      ttl: 60000,   // 60 seconds window
+      limit: 100,   // max 100 requests per IP per minute
+    }]),
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST || 'localhost',
@@ -28,10 +44,10 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
       adapter: ExpressAdapter,
     }),
     BullModule.registerQueue({
-      name: 'tender-processor',
+      name: TENDER_QUEUE_NAME,
     }),
     BullBoardModule.forFeature({
-      name: 'tender-processor',
+      name: TENDER_QUEUE_NAME,
       adapter: BullMQAdapter,
     }),
     PrismaModule,
@@ -42,6 +58,13 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
     AuthModule, // Global Auth guard
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
-export class AppModule { }
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(bullBoardAuthMiddleware).forRoutes('/queues');
+  }
+}

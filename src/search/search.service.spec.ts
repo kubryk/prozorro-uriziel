@@ -12,7 +12,7 @@ describe('SearchService', () => {
       count: jest.Mock;
     };
     syncState: {
-      findFirst: jest.Mock;
+      findUnique: jest.Mock;
     };
   };
   let tenderQueue: {
@@ -30,7 +30,7 @@ describe('SearchService', () => {
         count: jest.fn().mockResolvedValue(0),
       },
       syncState: {
-        findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue(null),
       },
     };
     tenderQueue = {
@@ -419,7 +419,7 @@ describe('SearchService', () => {
       .mockResolvedValueOnce(11)
       .mockResolvedValueOnce(0);
     prisma.contract.count.mockResolvedValue(7);
-    prisma.syncState.findFirst.mockResolvedValue({
+    prisma.syncState.findUnique.mockResolvedValue({
       updatedAt: new Date('2026-03-08T10:00:00.000Z'),
     });
 
@@ -435,7 +435,7 @@ describe('SearchService', () => {
       .mockResolvedValueOnce(11)
       .mockResolvedValueOnce(2);
     prisma.contract.count.mockResolvedValue(7);
-    prisma.syncState.findFirst.mockResolvedValue({
+    prisma.syncState.findUnique.mockResolvedValue({
       updatedAt: new Date('2026-03-08T10:00:00.000Z'),
     });
     tenderQueue.getJobCounts.mockResolvedValue({
@@ -452,7 +452,7 @@ describe('SearchService', () => {
       lastSync: null,
     });
     expect(prisma.tender.count).toHaveBeenNthCalledWith(2, {
-      where: { syncStatus: { in: ['PARTIAL', 'FAILED'] } },
+      where: { syncStatus: { in: ['PARTIAL', 'FAILED', 'RETRYING'] } },
     });
     expect(tenderQueue.getJobCounts).toHaveBeenCalledWith(
       'waiting',

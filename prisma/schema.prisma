@@ -14,13 +14,15 @@ model Tender {
   id           String        @id
   tenderID     String?       // Public ID, e.g., UA-2025-01-01-000107-a
   title        String?
+  description  String?
   status       String?
   amount                Float?
   currency              String?
+  valueAddedTaxIncluded Boolean?
   year             Int           // To filter by 2025/2026
   dateModified     DateTime
   dateCreated      DateTime?
-  
+
   // Official Prozorro periods
   tenderPeriodStart    DateTime?
   tenderPeriodEnd      DateTime?
@@ -29,13 +31,22 @@ model Tender {
   auctionPeriodStart   DateTime?
   awardPeriodStart     DateTime?
 
+  mainProcurementCategory String?  // goods, services, works
+  procurementMethod       String?  // limited, open, selective
+  procurementMethodType   String?  // reporting, belowThreshold, aboveThreshold, etc.
+
   syncStatus       String        @default("FULL") // "FULL", "PARTIAL", or "FAILED"
-  
+
   customerEdrpou   String?
   customerName     String?
+  customerRegion   String?
+  customerLocality String?
 
   // Relations
   contracts        Contract[]
+  lots             Lot[]
+  bids             Bid[]
+  complaints       Complaint[]
 
   @@index([customerEdrpou])
   @@index([tenderID])
@@ -43,17 +54,24 @@ model Tender {
   @@index([status])
   @@index([dateModified])
   @@index([syncStatus])
+  @@index([mainProcurementCategory])
+  @@index([procurementMethod])
+  @@index([procurementMethodType])
+  @@index([customerRegion])
   @@index([tenderPeriodStart])
   @@index([tenderPeriodEnd])
   @@index([enquiryPeriodStart])
   @@index([enquiryPeriodEnd])
   @@index([auctionPeriodStart])
   @@index([awardPeriodStart])
+  @@index([year, dateModified])
 }
 
 model Contract {
   id                      String        @id
   contractID              String?       // Public ID
+  contractNumber          String?       // Internal contract number
+  description             String?
   status                  String?
   amount                  Float?
   currency                String?
@@ -63,6 +81,8 @@ model Contract {
   date                    DateTime?
   dateModified            DateTime?
   dateCreated             DateTime?
+  periodStartDate         DateTime?     // Contract execution period
+  periodEndDate           DateTime?
 
   supplierEdrpou          String?
   supplierName            String?
@@ -70,15 +90,88 @@ model Contract {
   tenderId                String
   tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
 
+  items                   Item[]
+
   @@index([supplierEdrpou])
   @@index([contractID])
+  @@index([contractNumber])
   @@index([tenderId])
   @@index([status])
   @@index([dateModified])
   @@index([dateSigned])
+  @@index([periodEndDate])
+  @@index([tenderId, supplierEdrpou])
+}
+
+model Item {
+  id                      String        @id
+  description             String?
+  quantity                Float?
+  unitName                String?       // "штука", "кг", "послуга"
+  unitCode                String?       // H87, KGM, etc.
+  classificationId        String?       // ДК021 code, e.g. "18130000-9"
+  classificationDescription String?
+  deliveryRegion          String?
+  deliveryLocality        String?
+
+  contractId              String
+  contract                Contract      @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([classificationId])
+  @@index([contractId])
 }
 
 
+
+model Lot {
+  id                      String        @id
+  title                   String?
+  description             String?
+  status                  String?
+  amount                  Float?
+  currency                String?
+  valueAddedTaxIncluded   Boolean?
+
+  tenderId                String
+  tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@index([tenderId])
+  @@index([status])
+}
+
+model Bid {
+  id                      String        @id
+  date                    DateTime?
+  status                  String?
+  amount                  Float?
+  currency                String?
+  valueAddedTaxIncluded   Boolean?
+  bidderEdrpou            String?
+  bidderName              String?
+
+  tenderId                String
+  tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@index([tenderId])
+  @@index([bidderEdrpou])
+  @@index([status])
+}
+
+model Complaint {
+  id                      String        @id
+  title                   String?
+  description             String?
+  status                  String?       // claim, answered, resolved, declined, etc.
+  type                    String?       // complaint, claim
+  dateSubmitted           DateTime?
+  complaintID             String?       // Public complaint ID
+
+  tenderId                String
+  tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@index([tenderId])
+  @@index([status])
+}
 
 model SyncState {
   id          Int      @id @default(1)

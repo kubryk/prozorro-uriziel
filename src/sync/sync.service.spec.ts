@@ -224,11 +224,11 @@ describe('SyncService', () => {
     );
     expect(prisma.tender.update).toHaveBeenNthCalledWith(1, {
       where: { id: 'tender-partial' },
-      data: { syncStatus: 'FULL' },
+      data: { syncStatus: 'RETRYING' },
     });
     expect(prisma.tender.update).toHaveBeenNthCalledWith(2, {
       where: { id: 'tender-failed' },
-      data: { syncStatus: 'FULL' },
+      data: { syncStatus: 'RETRYING' },
     });
   });
 
@@ -258,7 +258,7 @@ describe('SyncService', () => {
     expect(tenderQueue.add).not.toHaveBeenCalled();
     expect(prisma.tender.update).toHaveBeenCalledWith({
       where: { id: 'tender-failed' },
-      data: { syncStatus: 'FULL' },
+      data: { syncStatus: 'RETRYING' },
     });
   });
 });

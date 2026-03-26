@@ -7,6 +7,10 @@ describe('TenderProcessor', () => {
     $transaction: jest.Mock;
     tender: { upsert: jest.Mock };
     contract: { upsert: jest.Mock; deleteMany: jest.Mock };
+    item: { upsert: jest.Mock; deleteMany: jest.Mock };
+    lot: { upsert: jest.Mock };
+    bid: { upsert: jest.Mock };
+    complaint: { upsert: jest.Mock };
   };
   let prozorroApi: {
     getTenderDetails: jest.Mock;
@@ -23,17 +27,29 @@ describe('TenderProcessor', () => {
       $transaction: jest.fn(),
       tender: {
         upsert: jest.fn().mockResolvedValue(undefined),
+        update: jest.fn().mockResolvedValue(undefined),
       },
       contract: {
         upsert: jest.fn().mockResolvedValue(undefined),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
+      item: {
+        upsert: jest.fn().mockResolvedValue(undefined),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      lot: { upsert: jest.fn().mockResolvedValue(undefined), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      bid: { upsert: jest.fn().mockResolvedValue(undefined), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      complaint: { upsert: jest.fn().mockResolvedValue(undefined), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     prisma.$transaction.mockImplementation(async (operationsOrCallback: any) => {
       if (typeof operationsOrCallback === 'function') {
         return operationsOrCallback({
           tender: prisma.tender,
           contract: prisma.contract,
+          item: prisma.item,
+          lot: prisma.lot,
+          bid: prisma.bid,
+          complaint: prisma.complaint,
         });
       }
 
@@ -262,7 +278,7 @@ describe('TenderProcessor', () => {
           dateModified: '2026-01-04T00:00:00.000Z',
         },
       } as any),
-    ).rejects.toThrow('No details found for tender: tender-4');
+    ).rejects.toThrow('Invalid or missing tender data for: tender-4');
 
     expect(prisma.tender.upsert).toHaveBeenCalledWith({
       where: { id: 'tender-4' },

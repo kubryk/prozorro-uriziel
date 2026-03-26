@@ -1,22 +1,33 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom, timer } from 'rxjs';
 import { retry } from 'rxjs/operators';
+import {
+  ProzorroTenderDetails,
+  ProzorroContractDetails,
+  ProzorroTenderListItem,
+  ProzorroTendersPageResponse,
+} from './prozorro.types';
 
 @Injectable()
-export class ProzorroService {
+export class ProzorroService implements OnModuleDestroy {
   private readonly logger = new Logger(ProzorroService.name);
   private readonly baseUrl = 'https://public.api.openprocurement.org/api/2.5';
+  private readonly refillInterval: ReturnType<typeof setInterval>;
 
   constructor(private readonly httpService: HttpService) {
     // Refill tokens every second (per-instance — no global Redis coordination)
-    setInterval(() => {
+    this.refillInterval = setInterval(() => {
       this.tokens = this.maxTokens;
       while (this.tokens > 0 && this.pendingQueue.length > 0) {
         this.pendingQueue.shift()!();
         this.tokens--;
       }
     }, 1000);
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.refillInterval);
   }
 
   // Per-instance rate limiter (token bucket)
@@ -50,16 +61,17 @@ export class ProzorroService {
 
   async getTendersPage(
     offset?: string,
-  ): Promise<{ data: any[]; nextPageOffset: string | null }> {
+  ): Promise<{ data: ProzorroTenderListItem[]; nextPageOffset: string | null }> {
     try {
+      await this.acquireRateLimit();
+
       const url = new URL(`${this.baseUrl}/tenders`);
       if (offset) {
         url.searchParams.set('offset', offset);
       }
 
-
       const response = await firstValueFrom(
-        this.httpService.get(url.toString()).pipe(retry(this.getRetryConfig())),
+        this.httpService.get<ProzorroTendersPageResponse>(url.toString()).pipe(retry(this.getRetryConfig())),
       );
       const responseData = response.data;
 
@@ -67,52 +79,41 @@ export class ProzorroService {
         data: responseData.data || [],
         nextPageOffset: responseData.next_page?.offset || null,
       };
-    } catch (error) {
-      this.logger.error(
-        `Error fetching tenders page: ${error.message}`,
-        error.stack,
-      );
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(`Error fetching tenders page: ${err.message}`, err.stack);
       throw error;
     }
   }
 
-  async getTenderDetails(tenderId: string): Promise<any> {
+  async getTenderDetails(tenderId: string): Promise<ProzorroTenderDetails> {
     try {
-      // Per-instance rate limit: max WORKER_REQUESTS_PER_SECOND per second on this machine
       await this.acquireRateLimit();
 
       const url = `${this.baseUrl}/tenders/${tenderId}`;
-
-
       const response = await firstValueFrom(
-        this.httpService.get(url).pipe(retry(this.getRetryConfig())),
+        this.httpService.get<{ data: ProzorroTenderDetails }>(url).pipe(retry(this.getRetryConfig())),
       );
       return response.data.data;
-    } catch (error) {
-      this.logger.error(
-        `Error fetching tender ${tenderId}: ${error.message}`,
-        error.stack,
-      );
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(`Error fetching tender ${tenderId}: ${err.message}`, err.stack);
       throw error;
     }
   }
 
-  async getContractDetails(tenderId: string, contractId: string): Promise<any> {
+  async getContractDetails(tenderId: string, contractId: string): Promise<ProzorroContractDetails> {
     try {
       await this.acquireRateLimit();
 
       const url = `${this.baseUrl}/contracts/${contractId}`;
-
-
       const response = await firstValueFrom(
-        this.httpService.get(url).pipe(retry(this.getRetryConfig())),
+        this.httpService.get<{ data: ProzorroContractDetails }>(url).pipe(retry(this.getRetryConfig())),
       );
       return response.data.data;
-    } catch (error) {
-      this.logger.error(
-        `Error fetching contract ${contractId}: ${error.message}`,
-        error.stack,
-      );
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(`Error fetching contract ${contractId}: ${err.message}`, err.stack);
       throw error;
     }
   }
