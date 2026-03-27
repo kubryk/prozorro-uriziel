@@ -31,11 +31,12 @@ export class ProzorroService implements OnModuleDestroy {
   }
 
   // Per-instance rate limiter (token bucket)
-  private readonly maxTokens = parseInt(
-    process.env.WORKER_REQUESTS_PER_SECOND || '50',
-    10,
-  );
-  private tokens = parseInt(process.env.WORKER_REQUESTS_PER_SECOND || '50', 10);
+  private static parseRateLimit(): number {
+    const parsed = parseInt(process.env.WORKER_REQUESTS_PER_SECOND || '', 10);
+    return Number.isNaN(parsed) || parsed < 1 ? 50 : parsed;
+  }
+  private readonly maxTokens = ProzorroService.parseRateLimit();
+  private tokens = this.maxTokens;
   private pendingQueue: Array<() => void> = [];
 
   private acquireRateLimit(): Promise<void> {

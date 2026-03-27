@@ -189,8 +189,7 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
       }
 
       if (!tenderDetails.status) {
-        this.logger.warn(`Tender ${tenderId} has no status field, skipping`);
-        return { success: false, reason: 'missing status' };
+        throw new Error(`Tender ${tenderId} has no status field`);
       }
 
       // Extract Customer (from procuringEntity)
@@ -220,7 +219,7 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
         : fallbackDateModified;
       const tenderDateModified = pDate(tenderDetails.dateModified) ?? safeFallbackDateModified;
       const tenderDateCreated = pDate(tenderDetails.dateCreated) ?? tenderDateModified;
-      const tenderYear = tenderDateModified.getFullYear();
+      const tenderYear = tenderDateModified.getUTCFullYear();
 
       // Extract Lots
       const lots = Array.isArray(tenderDetails.lots)
@@ -655,13 +654,13 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
         this.prisma.tender.upsert({
           where: { id: tenderId },
           update: {
-            year: safeDateModified.getFullYear(),
+            year: safeDateModified.getUTCFullYear(),
             dateModified: safeDateModified,
             syncStatus: 'FAILED',
           },
           create: {
             id: tenderId,
-            year: safeDateModified.getFullYear(),
+            year: safeDateModified.getUTCFullYear(),
             dateModified: safeDateModified,
             syncStatus: 'FAILED',
           },
