@@ -5,12 +5,13 @@ describe('TenderProcessor', () => {
   let processor: TenderProcessor;
   let prisma: {
     $transaction: jest.Mock;
-    tender: { upsert: jest.Mock };
+    tender: { upsert: jest.Mock; update: jest.Mock };
     contract: { upsert: jest.Mock; deleteMany: jest.Mock };
     item: { upsert: jest.Mock; deleteMany: jest.Mock };
-    lot: { upsert: jest.Mock };
-    bid: { upsert: jest.Mock };
-    complaint: { upsert: jest.Mock };
+    lot: { upsert: jest.Mock; deleteMany: jest.Mock };
+    bid: { upsert: jest.Mock; deleteMany: jest.Mock };
+    complaint: { upsert: jest.Mock; deleteMany: jest.Mock };
+    company: { upsert: jest.Mock };
   };
   let prozorroApi: {
     getTenderDetails: jest.Mock;
@@ -40,6 +41,7 @@ describe('TenderProcessor', () => {
       lot: { upsert: jest.fn().mockResolvedValue(undefined), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       bid: { upsert: jest.fn().mockResolvedValue(undefined), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       complaint: { upsert: jest.fn().mockResolvedValue(undefined), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      company: { upsert: jest.fn().mockImplementation(async (args: any) => ({ id: `company-${args.where.edrpou}`, edrpou: args.where.edrpou })) },
     };
     prisma.$transaction.mockImplementation(async (operationsOrCallback: any) => {
       if (typeof operationsOrCallback === 'function') {

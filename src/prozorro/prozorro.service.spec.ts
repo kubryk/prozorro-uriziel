@@ -70,7 +70,7 @@ describe('ProzorroService', () => {
     );
 
     await expect(
-      service.getContractDetails('tender-1', 'contract-1'),
+      service.getContractDetails('contract-1'),
     ).resolves.toEqual({
       id: 'contract-1',
       status: 'active',

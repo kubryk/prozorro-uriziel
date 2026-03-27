@@ -10,6 +10,24 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Company {
+  id          String    @id @default(uuid())
+  edrpou      String    @unique
+  name        String?
+  region      String?
+  locality    String?
+
+  tendersAsCustomer    Tender[]    @relation("TenderCustomer")
+  contractsAsSupplier  Contract[]  @relation("ContractSupplier")
+  bidsAsBidder         Bid[]       @relation("BidBidder")
+  complaintsAuthored   Complaint[] @relation("ComplaintAuthor")
+
+  updatedAt   DateTime  @updatedAt
+
+  @@index([name])
+  @@index([region])
+}
+
 model Tender {
   id           String        @id
   tenderID     String?       // Public ID, e.g., UA-2025-01-01-000107-a
@@ -35,12 +53,17 @@ model Tender {
   procurementMethod       String?  // limited, open, selective
   procurementMethodType   String?  // reporting, belowThreshold, aboveThreshold, etc.
 
-  syncStatus       String        @default("FULL") // "FULL", "PARTIAL", or "FAILED"
+  syncStatus       String        @default("FULL") // "FULL", "PARTIAL", "FAILED", "RETRYING"
 
+  // Denormalized customer fields (for fast reads without JOIN)
   customerEdrpou   String?
   customerName     String?
   customerRegion   String?
   customerLocality String?
+
+  // FK to Company
+  customerId       String?
+  customer         Company?      @relation("TenderCustomer", fields: [customerId], references: [id])
 
   // Relations
   contracts        Contract[]
@@ -65,6 +88,7 @@ model Tender {
   @@index([auctionPeriodStart])
   @@index([awardPeriodStart])
   @@index([year, dateModified])
+  @@index([customerId])
 }
 
 model Contract {
@@ -84,8 +108,13 @@ model Contract {
   periodStartDate         DateTime?     // Contract execution period
   periodEndDate           DateTime?
 
+  // Denormalized supplier fields
   supplierEdrpou          String?
   supplierName            String?
+
+  // FK to Company
+  supplierId              String?
+  supplier                Company?      @relation("ContractSupplier", fields: [supplierId], references: [id])
 
   tenderId                String
   tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
@@ -101,6 +130,7 @@ model Contract {
   @@index([dateSigned])
   @@index([periodEndDate])
   @@index([tenderId, supplierEdrpou])
+  @@index([supplierId])
 }
 
 model Item {
@@ -120,8 +150,6 @@ model Item {
   @@index([classificationId])
   @@index([contractId])
 }
-
-
 
 model Lot {
   id                      String        @id
@@ -146,8 +174,14 @@ model Bid {
   amount                  Float?
   currency                String?
   valueAddedTaxIncluded   Boolean?
+
+  // Denormalized bidder fields
   bidderEdrpou            String?
   bidderName              String?
+
+  // FK to Company
+  bidderId                String?
+  bidder                  Company?      @relation("BidBidder", fields: [bidderId], references: [id])
 
   tenderId                String
   tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
@@ -155,6 +189,7 @@ model Bid {
   @@index([tenderId])
   @@index([bidderEdrpou])
   @@index([status])
+  @@index([bidderId])
 }
 
 model Complaint {
@@ -166,11 +201,21 @@ model Complaint {
   dateSubmitted           DateTime?
   complaintID             String?       // Public complaint ID
 
+  // Complaint author
+  complainantEdrpou       String?
+  complainantName         String?
+
+  // FK to Company (author)
+  complainantId           String?
+  complainant             Company?      @relation("ComplaintAuthor", fields: [complainantId], references: [id])
+
   tenderId                String
   tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
 
   @@index([tenderId])
   @@index([status])
+  @@index([complainantEdrpou])
+  @@index([complainantId])
 }
 
 model SyncState {

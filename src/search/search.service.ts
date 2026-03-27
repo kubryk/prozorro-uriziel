@@ -395,6 +395,78 @@ export class SearchService {
         return rows.length;
     }
 
+    async getCompanyProfile(edrpou: string) {
+        const company = await this.prisma.company.findUnique({
+            where: { edrpou },
+        });
+
+        if (!company) {
+            return null;
+        }
+
+        const results = await Promise.allSettled([
+            this.prisma.tender.count({ where: { customerEdrpou: edrpou } }),
+            this.prisma.tender.aggregate({ where: { customerEdrpou: edrpou }, _sum: { amount: true } }),
+            this.prisma.contract.count({ where: { supplierEdrpou: edrpou } }),
+            this.prisma.contract.aggregate({ where: { supplierEdrpou: edrpou }, _sum: { amount: true } }),
+            this.prisma.bid.count({ where: { bidderEdrpou: edrpou } }),
+            this.prisma.complaint.count({ where: { tender: { customerEdrpou: edrpou } } }),
+            this.prisma.complaint.count({ where: { complainantEdrpou: edrpou } }),
+            this.prisma.tender.findMany({
+                where: { customerEdrpou: edrpou },
+                orderBy: { dateModified: 'desc' },
+                take: 5,
+                select: { id: true, tenderID: true, title: true, status: true, amount: true, currency: true, dateModified: true },
+            }),
+            this.prisma.contract.findMany({
+                where: { supplierEdrpou: edrpou },
+                orderBy: { dateSigned: 'desc' },
+                take: 5,
+                select: {
+                    id: true, contractID: true, description: true, status: true, amount: true, currency: true, dateSigned: true,
+                    tender: { select: { tenderID: true, title: true, customerEdrpou: true, customerName: true } },
+                },
+            }),
+        ]);
+
+        const val = <T>(r: PromiseSettledResult<T>, fallback: T): T =>
+            r.status === 'fulfilled' ? r.value : fallback;
+
+        const tenderCount = val(results[0], 0);
+        const tenderSum = val(results[1], { _sum: { amount: null } });
+        const contractCount = val(results[2], 0);
+        const contractSum = val(results[3], { _sum: { amount: null } });
+        const bidCount = val(results[4], 0);
+        const complaintsAgainstCount = val(results[5], 0);
+        const complaintsByCount = val(results[6], 0);
+        const recentTenders = val(results[7], [] as any[]);
+        const recentContracts = val(results[8], [] as any[]);
+        const winRate = bidCount > 0 ? contractCount / bidCount : null;
+
+        return {
+            edrpou: company.edrpou,
+            name: company.name,
+            region: company.region,
+            locality: company.locality,
+            asCustomer: {
+                tenderCount,
+                totalAmount: tenderSum._sum.amount,
+            },
+            asSupplier: {
+                contractCount,
+                totalAmount: contractSum._sum.amount,
+                bidCount,
+                winRate,
+            },
+            complaints: {
+                against: complaintsAgainstCount,
+                by: complaintsByCount,
+            },
+            recentTenders,
+            recentContracts,
+        };
+    }
+
     async getStats() {
         const results = await Promise.allSettled([
             this.prisma.tender.count(),

@@ -212,11 +212,13 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
 
         this.addedCount += data.length;
 
-        // 4. Update local tracker and Database offset (optimistic locking via updatedAt)
+        // 4. Update local tracker and Database offset
+        // Optimistic lock: only update if lastOffset still matches what we read.
+        // This prevents two MAIN instances from overwriting each other's progress.
         currentOffset = nextPageOffset;
         if (currentOffset) {
           const updated = await this.prisma.syncState.updateMany({
-            where: { id: 1, updatedAt: syncState!.updatedAt },
+            where: { id: 1, lastOffset: syncState!.lastOffset },
             data: { lastOffset: currentOffset },
           });
           if (updated.count === 0) {

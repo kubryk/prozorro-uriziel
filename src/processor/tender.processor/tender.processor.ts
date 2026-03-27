@@ -39,7 +39,7 @@ function sanitize(val: string | number | null | undefined): string | null {
 function toFloat(val: string | number | null | undefined): number | null {
   if (val == null) return null;
   const n = typeof val === 'string' ? parseFloat(val) : val;
-  return isNaN(n) ? null : n;
+  return isNaN(n) || !isFinite(n) ? null : n;
 }
 
 interface ParsedComplaint {
@@ -50,6 +50,15 @@ interface ParsedComplaint {
   type: string | null;
   dateSubmitted: Date | null;
   complaintID: string | null;
+  complainantEdrpou: string | null;
+  complainantName: string | null;
+}
+
+interface CompanyData {
+  edrpou: string;
+  name: string | null;
+  region: string | null;
+  locality: string | null;
 }
 
 @Processor(TENDER_QUEUE_NAME, {
@@ -137,7 +146,7 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
   ): Promise<ProzorroContractDetails | null> {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        return await this.prozorroApi.getContractDetails(tenderId, contractId);
+        return await this.prozorroApi.getContractDetails(contractId);
       } catch (contractError: any) {
         const status = contractError?.response?.status;
         if (status && status >= 400 && status < 500) {
@@ -244,33 +253,29 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
         : [];
 
       // Extract Complaints (from tender level and awards)
+      const parseComplaint = (c: ProzorroComplaint): ParsedComplaint => ({
+        id: c.id,
+        title: sanitize(c.title),
+        description: sanitize(c.description),
+        status: c.status || null,
+        type: c.type || null,
+        dateSubmitted: pDate(c.dateSubmitted),
+        complaintID: c.complaintID || null,
+        complainantEdrpou: sanitize(c.author?.identifier?.id),
+        complainantName: sanitize(c.author?.name),
+      });
+
       const complaints: ParsedComplaint[] = [];
       if (Array.isArray(tenderDetails.complaints)) {
         for (const c of tenderDetails.complaints) {
-          complaints.push({
-            id: c.id,
-            title: sanitize(c.title),
-            description: sanitize(c.description),
-            status: c.status || null,
-            type: c.type || null,
-            dateSubmitted: pDate(c.dateSubmitted),
-            complaintID: c.complaintID || null,
-          });
+          complaints.push(parseComplaint(c));
         }
       }
       if (Array.isArray(tenderDetails.awards)) {
         for (const award of tenderDetails.awards) {
           if (Array.isArray(award.complaints)) {
             for (const c of award.complaints) {
-              complaints.push({
-                id: c.id,
-                title: sanitize(c.title),
-                description: sanitize(c.description),
-                status: c.status || null,
-                type: c.type || null,
-                dateSubmitted: pDate(c.dateSubmitted),
-                complaintID: c.complaintID || null,
-              });
+              complaints.push(parseComplaint(c));
             }
           }
         }
@@ -406,6 +411,94 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
         };
       });
 
+      // Collect all unique companies (by ЄДРПОУ) for upsert
+      const companyMap = new Map<string, CompanyData>();
+
+      // Customer
+      if (customerEdrpou) {
+        companyMap.set(customerEdrpou, {
+          edrpou: customerEdrpou,
+          name: customerName,
+          region: customerRegion,
+          locality: customerLocality,
+        });
+      }
+
+      // Suppliers from contracts
+      for (const cw of contractWrites) {
+        const edrpou = cw.data.supplierEdrpou;
+        if (edrpou && !companyMap.has(edrpou)) {
+          companyMap.set(edrpou, {
+            edrpou,
+            name: cw.data.supplierName,
+            region: null,
+            locality: null,
+          });
+        }
+      }
+
+      // Bidders from bids
+      for (const bid of bids) {
+        if (bid.bidderEdrpou && !companyMap.has(bid.bidderEdrpou)) {
+          companyMap.set(bid.bidderEdrpou, {
+            edrpou: bid.bidderEdrpou,
+            name: bid.bidderName,
+            region: null,
+            locality: null,
+          });
+        }
+      }
+
+      // Complainants from complaints
+      for (const c of complaints) {
+        if (c.complainantEdrpou && !companyMap.has(c.complainantEdrpou)) {
+          companyMap.set(c.complainantEdrpou, {
+            edrpou: c.complainantEdrpou,
+            name: c.complainantName,
+            region: null,
+            locality: null,
+          });
+        }
+      }
+
+      // Upsert companies one-by-one (no transaction) to avoid deadlocks
+      // when multiple workers upsert the same company concurrently.
+      // Uses DB write slot to respect connection pool limits.
+      const edrpouToCompanyId = new Map<string, string>();
+      if (companyMap.size > 0) {
+        await this.withDbWriteSlot(async () => {
+          for (const company of companyMap.values()) {
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                const result = await this.prisma.company.upsert({
+                  where: { edrpou: company.edrpou },
+                  update: {
+                    ...(company.name ? { name: company.name } : {}),
+                    ...(company.region ? { region: company.region } : {}),
+                    ...(company.locality ? { locality: company.locality } : {}),
+                  },
+                  create: {
+                    edrpou: company.edrpou,
+                    name: company.name,
+                    region: company.region,
+                    locality: company.locality,
+                  },
+                  select: { id: true, edrpou: true },
+                });
+                edrpouToCompanyId.set(result.edrpou, result.id);
+                break;
+              } catch (e: unknown) {
+                if (attempt === 3) throw e;
+                await new Promise((r) => setTimeout(r, 50 * attempt));
+              }
+            }
+          }
+        });
+      }
+
+      // Resolve FK IDs
+      const customerId = customerEdrpou ? edrpouToCompanyId.get(customerEdrpou) ?? null : null;
+
       const deleteWhere: Prisma.ContractWhereInput =
         expectedContractIds.length > 0
           ? {
@@ -417,22 +510,23 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
       const transactionOperations: Prisma.PrismaPromise<unknown>[] = [
         this.prisma.tender.upsert({
           where: { id: tenderDetails.id },
-          update: tenderWriteData,
+          update: { ...tenderWriteData, customerId },
           create: {
             id: tenderDetails.id,
             ...tenderWriteData,
+            customerId,
           },
         }),
-        ...contractWrites.map(({ id, data }) =>
-          this.prisma.contract.upsert({
+        ...contractWrites.map(({ id, data }) => {
+          const supplierId = data.supplierEdrpou
+            ? edrpouToCompanyId.get(data.supplierEdrpou) ?? null
+            : null;
+          return this.prisma.contract.upsert({
             where: { id },
-            update: data,
-            create: {
-              id,
-              ...data,
-            },
-          }),
-        ),
+            update: { ...data, supplierId },
+            create: { id, ...data, supplierId },
+          });
+        }),
         // Upsert items for each contract
         ...contractWrites.flatMap(({ id: contractId, items }) =>
           items.map((item) =>
@@ -466,20 +560,26 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
             create: { ...lot, tenderId: tenderDetails.id },
           }),
         ),
-        ...bids.map((bid) =>
-          this.prisma.bid.upsert({
+        ...bids.map((bid) => {
+          const bidderId = bid.bidderEdrpou
+            ? edrpouToCompanyId.get(bid.bidderEdrpou) ?? null
+            : null;
+          return this.prisma.bid.upsert({
             where: { id: bid.id },
-            update: { ...bid, tenderId: tenderDetails.id },
-            create: { ...bid, tenderId: tenderDetails.id },
-          }),
-        ),
-        ...complaints.map((c) =>
-          this.prisma.complaint.upsert({
+            update: { ...bid, tenderId: tenderDetails.id, bidderId },
+            create: { ...bid, tenderId: tenderDetails.id, bidderId },
+          });
+        }),
+        ...complaints.map((c) => {
+          const complainantId = c.complainantEdrpou
+            ? edrpouToCompanyId.get(c.complainantEdrpou) ?? null
+            : null;
+          return this.prisma.complaint.upsert({
             where: { id: c.id },
-            update: { ...c, tenderId: tenderDetails.id },
-            create: { ...c, tenderId: tenderDetails.id },
-          }),
-        ),
+            update: { ...c, tenderId: tenderDetails.id, complainantId },
+            create: { ...c, tenderId: tenderDetails.id, complainantId },
+          });
+        }),
         // Delete stale lots/bids/complaints that no longer exist in Prozorro payload
         this.prisma.lot.deleteMany({
           where: {
@@ -567,9 +667,10 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
           },
         }),
       );
+      const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(
-        `Failed to process tender ${tenderId}: ${error.message}`,
-        error.stack,
+        `Failed to process tender ${tenderId}: ${err.message}`,
+        err.stack,
       );
       throw error;
     }

@@ -9,9 +9,10 @@ logs
 *.log
 npm-debug.log*
 
-# Backups
+# Backups (but not Prisma migrations)
 *.sql
 *.sql.gz
+!prisma/migrations/**/*.sql
 
 # Temporary scripts
 *_queue.js

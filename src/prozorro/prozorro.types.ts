@@ -65,6 +65,10 @@ export interface ProzorroComplaint {
   type?: string;
   dateSubmitted?: string;
   complaintID?: string;
+  author?: {
+    name?: string;
+    identifier?: ProzorroIdentifier;
+  };
 }
 
 export interface ProzorroAward {

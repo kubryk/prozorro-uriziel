@@ -16,9 +16,12 @@ async function bootstrap() {
   validateEnv();
   const app = await NestFactory.create(AppModule);
 
-  // CORS: restrict to CORS_ORIGIN env var, fallback to localhost for dev
+  // CORS: restrict to CORS_ORIGIN env var (comma-separated for multiple origins)
+  const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: corsOrigin.includes(',')
+      ? corsOrigin.split(',').map((o) => o.trim())
+      : corsOrigin,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     allowedHeaders: 'Content-Type, Accept, X-API-KEY',
   });

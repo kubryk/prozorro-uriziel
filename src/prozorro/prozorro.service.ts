@@ -102,7 +102,7 @@ export class ProzorroService implements OnModuleDestroy {
     }
   }
 
-  async getContractDetails(tenderId: string, contractId: string): Promise<ProzorroContractDetails> {
+  async getContractDetails(contractId: string): Promise<ProzorroContractDetails> {
     try {
       await this.acquireRateLimit();
 

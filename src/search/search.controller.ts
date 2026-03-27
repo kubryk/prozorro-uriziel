@@ -1,5 +1,5 @@
-import { Controller, Get, Query } from '@nestjs/common';
-import { ApiQuery, ApiOperation, ApiResponse, ApiTags, ApiSecurity } from '@nestjs/swagger';
+import { Controller, Get, NotFoundException, Param, Query } from '@nestjs/common';
+import { ApiParam, ApiQuery, ApiOperation, ApiResponse, ApiTags, ApiSecurity } from '@nestjs/swagger';
 import { SearchService } from './search.service';
 import { SearchTendersQueryDto } from './dto/search-tenders-query.dto';
 import { SearchContractsQueryDto } from './dto/search-contracts-query.dto';
@@ -53,6 +53,19 @@ export class SearchController {
         return this.searchService.searchContracts(query);
     }
 
+
+    @Get('company/:edrpou')
+    @ApiOperation({ summary: 'Get company profile by EDRPOU' })
+    @ApiParam({ name: 'edrpou', type: String, description: 'Company EDRPOU (8 or 10 digits)' })
+    @ApiResponse({ status: 200, description: 'Company profile with aggregated statistics' })
+    @ApiResponse({ status: 404, description: 'Company not found' })
+    async getCompanyProfile(@Param('edrpou') edrpou: string) {
+        const profile = await this.searchService.getCompanyProfile(edrpou);
+        if (!profile) {
+            throw new NotFoundException(`Company with EDRPOU ${edrpou} not found`);
+        }
+        return profile;
+    }
 
     @Get('stats')
     @ApiOperation({ summary: 'Get total stats for tenders and contracts' })

@@ -8,6 +8,7 @@ describe('SyncService', () => {
       findUnique: jest.Mock;
       create: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
     };
     tender: {
       count: jest.Mock;
@@ -40,6 +41,7 @@ describe('SyncService', () => {
         findUnique: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       tender: {
         count: jest.fn().mockResolvedValue(0),
@@ -75,8 +77,11 @@ describe('SyncService', () => {
   });
 
   it('ставить versioned main jobs, щоб нові апдейти тендера не блокувались старим failed jobId', async () => {
-    prisma.syncState.findUnique.mockResolvedValue({ id: 1, lastOffset: 'offset-1' });
-    prisma.syncState.update.mockResolvedValue(undefined);
+    prisma.syncState.findUnique
+      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-1' })
+      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-2' })
+      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-2' })
+      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-3' });
     prozorroApi.getTendersPage
       .mockResolvedValueOnce({
         data: [

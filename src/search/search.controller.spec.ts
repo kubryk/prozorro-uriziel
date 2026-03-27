@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { SearchController } from './search.controller';
 import { SearchService } from './search.service';
 import { SearchContractsQueryDto } from './dto/search-contracts-query.dto';
@@ -11,6 +12,7 @@ describe('SearchController', () => {
     searchService = {
       searchTenders: jest.fn(),
       searchContracts: jest.fn(),
+      getCompanyProfile: jest.fn(),
       getStats: jest.fn(),
     } as unknown as jest.Mocked<SearchService>;
 
@@ -21,6 +23,7 @@ describe('SearchController', () => {
     searchService.searchTenders.mockResolvedValue({
       data: [],
       total: 0,
+      relatedContractTotal: 0,
       skip: 5,
       take: 100,
     });
@@ -46,6 +49,7 @@ describe('SearchController', () => {
     searchService.searchContracts.mockResolvedValue({
       data: [],
       total: 0,
+      relatedTenderTotal: 0,
       skip: 0,
       take: 20,
     });
@@ -65,6 +69,30 @@ describe('SearchController', () => {
     await controller.searchContracts(query);
 
     expect(searchService.searchContracts).toHaveBeenCalledWith(query);
+  });
+
+  it('повертає профіль компанії за ЄДРПОУ', async () => {
+    const profile = {
+      edrpou: '12345678',
+      name: 'Test Company',
+      region: 'Київська',
+      locality: 'Київ',
+      asCustomer: { tenderCount: 5, totalAmount: 100000 },
+      asSupplier: { contractCount: 3, totalAmount: 50000, bidCount: 10, winRate: 0.3 },
+      complaints: { against: 2, by: 1 },
+      recentTenders: [],
+      recentContracts: [],
+    };
+    searchService.getCompanyProfile.mockResolvedValue(profile);
+
+    await expect(controller.getCompanyProfile('12345678')).resolves.toEqual(profile);
+    expect(searchService.getCompanyProfile).toHaveBeenCalledWith('12345678');
+  });
+
+  it('кидає NotFoundException, якщо компанію не знайдено', async () => {
+    searchService.getCompanyProfile.mockResolvedValue(null);
+
+    await expect(controller.getCompanyProfile('99999999')).rejects.toThrow(NotFoundException);
   });
 
   it('делегує отримання статистики сервісу', async () => {
