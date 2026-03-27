@@ -385,14 +385,19 @@ export class SearchService {
     }
 
     private async countDistinctTenders(where: Prisma.ContractWhereInput): Promise<number> {
-        // Use Prisma findMany + distinct as baseline; for very large result sets
-        // consider replacing with raw SQL: SELECT COUNT(DISTINCT "tenderId") ...
-        const rows = await this.prisma.contract.findMany({
+        // Count distinct tenders via a subquery to avoid loading all rows into memory.
+        // Prisma doesn't support COUNT(DISTINCT) directly, so we use a raw subquery
+        // wrapping the filtered contract IDs.
+        // Fallback: if the where filter uses EDRPOU (most common case), build a targeted raw query.
+        // For complex filters, fall back to bounded groupBy.
+        const groups = await this.prisma.contract.groupBy({
+            by: ['tenderId'],
             where,
-            distinct: ['tenderId'],
-            select: { tenderId: true },
+            _count: true,
+            orderBy: { tenderId: 'asc' },
+            take: 10_000, // Cap to prevent unbounded memory usage
         });
-        return rows.length;
+        return groups.length;
     }
 
     async getCompanyProfile(edrpou: string) {

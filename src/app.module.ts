@@ -65,6 +65,7 @@ function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(bullBoardAuthMiddleware).forRoutes('/queues');
+    consumer.apply(bullBoardAuthMiddleware).forRoutes('/queues(.*)');
+
   }
 }

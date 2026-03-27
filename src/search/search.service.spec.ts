@@ -10,6 +10,7 @@ describe('SearchService', () => {
     contract: {
       findMany: jest.Mock;
       count: jest.Mock;
+      groupBy: jest.Mock;
     };
     syncState: {
       findUnique: jest.Mock;
@@ -28,6 +29,7 @@ describe('SearchService', () => {
       contract: {
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
+        groupBy: jest.fn().mockResolvedValue([]),
       },
       syncState: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -376,26 +378,11 @@ describe('SearchService', () => {
   });
 
   it('повертає реальну кількість унікальних тендерів для знайдених контрактів', async () => {
-    prisma.contract.findMany
-      .mockResolvedValueOnce([
-        {
-          id: 'contract-1',
-          contractID: 'C-1',
-          tenderId: 'tender-db-1',
-          tender: { tenderID: 'UA-1' },
-        },
-        {
-          id: 'contract-2',
-          contractID: 'C-2',
-          tenderId: 'tender-db-1',
-          tender: { tenderID: 'UA-1' },
-        },
-      ])
-      .mockResolvedValueOnce([
-        { tenderId: 'tender-db-1' },
-        { tenderId: 'tender-db-2' },
-        { tenderId: 'tender-db-3' },
-      ]);
+    prisma.contract.groupBy.mockResolvedValue([
+      { tenderId: 'tender-db-1', _count: 2 },
+      { tenderId: 'tender-db-2', _count: 1 },
+      { tenderId: 'tender-db-3', _count: 1 },
+    ]);
     prisma.contract.count.mockResolvedValue(17);
 
     await expect(service.searchContracts({})).resolves.toMatchObject({
@@ -405,12 +392,12 @@ describe('SearchService', () => {
       take: 20,
     });
 
-    expect(prisma.contract.findMany).toHaveBeenNthCalledWith(2, {
+    expect(prisma.contract.groupBy).toHaveBeenCalledWith({
+      by: ['tenderId'],
       where: {},
-      distinct: ['tenderId'],
-      select: {
-        tenderId: true,
-      },
+      _count: true,
+      orderBy: { tenderId: 'asc' },
+      take: 10_000,
     });
   });
 
