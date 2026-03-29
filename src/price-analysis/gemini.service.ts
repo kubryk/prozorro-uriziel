@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { ExtractedItem, MarketPriceResult } from './price-analysis.types';
 
-const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
 const EXTRACTION_PROMPT = `You are analyzing a Ukrainian public procurement contract specification.
 Extract all items with their prices from the following text.
@@ -38,12 +38,41 @@ set marketPrice to null and explain why in the source field.
 Return ONLY the JSON array, no other text.`;
 
 const ITEMS_PER_BATCH = 10;
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 2_000;
 
 @Injectable()
 export class GeminiService implements OnModuleInit {
   private readonly logger = new Logger(GeminiService.name);
   private model: GenerativeModel;
   private searchModel: GenerativeModel;
+
+  private async callWithRetry<T>(
+    fn: () => Promise<T>,
+    label: string,
+  ): Promise<T> {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await fn();
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const isRetryable =
+          msg.includes('API_KEY_INVALID') ||
+          msg.includes('429') ||
+          msg.includes('503') ||
+          msg.includes('RESOURCE_EXHAUSTED');
+
+        if (!isRetryable || attempt === MAX_RETRIES) throw error;
+
+        const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+        this.logger.warn(
+          `${label}: attempt ${attempt}/${MAX_RETRIES} failed (${msg.substring(0, 80)}), retrying in ${delay}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    throw new Error('unreachable');
+  }
 
   private parseJsonArray<T>(text: string): T[] {
     const trimmedText = text.trim();
@@ -90,8 +119,9 @@ export class GeminiService implements OnModuleInit {
   async extractItemsFromText(specificationText: string): Promise<ExtractedItem[]> {
     if (!this.model) throw new Error('Gemini not configured');
 
-    const result = await this.model.generateContent(
-      EXTRACTION_PROMPT + specificationText,
+    const result = await this.callWithRetry(
+      () => this.model.generateContent(EXTRACTION_PROMPT + specificationText),
+      'extractItems',
     );
     const text = result.response.text();
 
@@ -161,7 +191,10 @@ export class GeminiService implements OnModuleInit {
       .replace('{REGION_CONTEXT}', regionContext)
       .replace('{REGION_SEARCH_HINT}', regionSearchHint)
       .replace('{ITEMS}', itemsJson);
-    const result = await this.searchModel.generateContent(prompt);
+    const result = await this.callWithRetry(
+      () => this.searchModel.generateContent(prompt),
+      'searchMarketPrices',
+    );
     const text = result.response.text();
 
     try {

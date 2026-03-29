@@ -53,6 +53,11 @@ export class PriceAnalysisService {
         continue;
       }
 
+      // Remove old FAILED analyses so they don't block re-analysis
+      await this.prisma.priceAnalysis.deleteMany({
+        where: { contractId: contract.id, status: 'FAILED' },
+      });
+
       const analysis = await this.prisma.priceAnalysis.create({
         data: {
           contractId: contract.id,
