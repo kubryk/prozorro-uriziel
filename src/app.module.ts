@@ -19,9 +19,11 @@ import { TENDER_QUEUE_NAME } from './constants';
 
 function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers['x-api-key'];
-  if (apiKey && apiKey === process.env.API_KEY) {
+  const validKey = process.env.API_KEY;
+  if (validKey && apiKey === validKey) {
     return next();
   }
+  // Deliberately omit the key value from logs to prevent secret exposure
   res.status(401).json({ message: 'Unauthorized' });
 }
 

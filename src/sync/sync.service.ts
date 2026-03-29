@@ -90,7 +90,9 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
       return `main-${tender.id}-${parsedDateModified.getTime()}`;
     }
 
-    const normalizedDateModified = rawDateModified.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const normalizedDateModified = rawDateModified
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .substring(0, 50); // Guard against BullMQ jobId limit (512 bytes)
     return normalizedDateModified
       ? `main-${tender.id}-${normalizedDateModified}`
       : `main-${tender.id}`;
@@ -225,7 +227,8 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
             this.logger.warn('Sync state was modified by another instance, skipping this run');
             break;
           }
-          syncState = await this.prisma.syncState.findUnique({ where: { id: 1 } });
+          // Update in-memory state without an extra DB round-trip
+          syncState = { ...syncState!, lastOffset: currentOffset };
         }
 
         pagesProcessed++;
