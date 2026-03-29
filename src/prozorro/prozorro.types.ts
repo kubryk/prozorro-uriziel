@@ -141,6 +141,15 @@ export interface ProzorroContractDetails {
   items?: ProzorroItem[];
 }
 
+export interface ProzorroDocument {
+  id: string;
+  title?: string;
+  url?: string;
+  format?: string;
+  datePublished?: string;
+  dateModified?: string;
+}
+
 /** Tender list item from /tenders endpoint */
 export interface ProzorroTenderListItem {
   id: string;

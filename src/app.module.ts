@@ -1,7 +1,7 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -15,7 +15,10 @@ import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { Request, Response, NextFunction } from 'express';
-import { TENDER_QUEUE_NAME } from './constants';
+import { TENDER_QUEUE_NAME, PRICE_ANALYSIS_QUEUE_NAME } from './constants';
+import { PriceAnalysisModule } from './price-analysis/price-analysis.module';
+import { TelegramModule } from './telegram/telegram.module';
+import { HttpThrottlerGuard } from './http-throttler.guard';
 
 function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers['x-api-key'];
@@ -48,8 +51,15 @@ function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction
     BullModule.registerQueue({
       name: TENDER_QUEUE_NAME,
     }),
+    BullModule.registerQueue({
+      name: PRICE_ANALYSIS_QUEUE_NAME,
+    }),
     BullBoardModule.forFeature({
       name: TENDER_QUEUE_NAME,
+      adapter: BullMQAdapter,
+    }),
+    BullBoardModule.forFeature({
+      name: PRICE_ANALYSIS_QUEUE_NAME,
       adapter: BullMQAdapter,
     }),
     PrismaModule,
@@ -58,16 +68,20 @@ function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction
     SearchModule,
     ProcessorModule, // Import the processor module as well so the worker starts
     AuthModule, // Global Auth guard
+    PriceAnalysisModule,
+    ...(process.env.TELEGRAM_BOT_TOKEN ? [TelegramModule] : []),
   ],
   controllers: [AppController],
   providers: [
     AppService,
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: HttpThrottlerGuard },
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(bullBoardAuthMiddleware).forRoutes('/queues(.*)');
+    consumer
+      .apply(bullBoardAuthMiddleware)
+      .forRoutes('/queues', '/queues/*path');
 
   }
 }

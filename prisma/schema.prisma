@@ -120,6 +120,7 @@ model Contract {
   tender                  Tender        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
 
   items                   Item[]
+  priceAnalyses           PriceAnalysis[]
 
   @@index([supplierEdrpou])
   @@index([contractID])
@@ -222,4 +223,42 @@ model SyncState {
   id          Int      @id @default(1)
   lastOffset  String?
   updatedAt   DateTime @updatedAt
+}
+
+model PriceAnalysis {
+  id                  String              @id @default(uuid())
+  contractId          String
+  contract            Contract            @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  status              String              @default("PENDING") // PENDING, DOWNLOADING_PDF, EXTRACTING_ITEMS, SEARCHING_PRICES, COMPLETE, FAILED
+  errorMessage        String?
+  totalItems          Int?
+  itemsAboveMarket    Int?
+  riskScore           Float?              // 0.0–1.0
+  sourceDocumentTitle String?
+  telegramChatId      String?             // Chat to send results back to
+  telegramMessageId   Int?                // Status message to edit
+  extractedItems      PriceAnalysisItem[]
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@index([contractId])
+  @@index([status])
+  @@index([riskScore])
+}
+
+model PriceAnalysisItem {
+  id             String        @id @default(uuid())
+  analysisId     String
+  analysis       PriceAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  itemName       String
+  unitPrice      Float
+  quantity       Float?
+  unit           String?
+  marketPrice    Float?
+  marketPriceMin Float?
+  marketPriceMax Float?
+  marketSource   String?
+  priceDeviation Float?        // (unitPrice - marketPrice) / marketPrice
+
+  @@index([analysisId])
 }

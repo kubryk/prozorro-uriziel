@@ -13,6 +13,7 @@ import { TENDER_QUEUE_NAME } from '../constants';
     }),
   ],
   providers: [SearchService],
-  controllers: [SearchController]
+  controllers: [SearchController],
+  exports: [SearchService],
 })
 export class SearchModule { }

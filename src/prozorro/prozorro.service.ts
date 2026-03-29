@@ -7,6 +7,7 @@ import {
   ProzorroContractDetails,
   ProzorroTenderListItem,
   ProzorroTendersPageResponse,
+  ProzorroDocument,
 } from './prozorro.types';
 
 @Injectable()
@@ -99,6 +100,22 @@ export class ProzorroService implements OnModuleDestroy {
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(`Error fetching tender ${tenderId}: ${err.message}`, err.stack);
+      throw error;
+    }
+  }
+
+  async getContractDocuments(contractId: string): Promise<ProzorroDocument[]> {
+    try {
+      await this.acquireRateLimit();
+
+      const url = `${this.baseUrl}/contracts/${contractId}/documents`;
+      const response = await firstValueFrom(
+        this.httpService.get<{ data: ProzorroDocument[] }>(url).pipe(retry(this.getRetryConfig())),
+      );
+      return response.data.data || [];
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(`Error fetching documents for contract ${contractId}: ${err.message}`, err.stack);
       throw error;
     }
   }

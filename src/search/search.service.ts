@@ -512,4 +512,24 @@ export class SearchService {
             lastSync: isFullySynced ? syncState?.updatedAt || null : null
         };
     }
+
+    async findTenderByTenderId(tenderID: string) {
+        return this.prisma.tender.findFirst({
+            where: { tenderID },
+            include: {
+                contracts: {
+                    select: {
+                        id: true,
+                        contractID: true,
+                        status: true,
+                        amount: true,
+                        currency: true,
+                        supplierEdrpou: true,
+                        supplierName: true,
+                        dateSigned: true,
+                    },
+                },
+            },
+        });
+    }
 }
