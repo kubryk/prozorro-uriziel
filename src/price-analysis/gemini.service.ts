@@ -2,6 +2,8 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { ExtractedItem, MarketPriceResult } from './price-analysis.types';
 
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+
 const EXTRACTION_PROMPT = `You are analyzing a Ukrainian public procurement contract specification.
 Extract all items with their prices from the following text.
 
@@ -19,7 +21,7 @@ Text:
 `;
 
 const MARKET_PRICE_PROMPT = `For each of the following items from a Ukrainian public procurement contract,
-find the current average market price in Ukraine (in UAH per unit).
+find the current average market price {REGION_CONTEXT}(in UAH per unit).
 
 Items:
 {ITEMS}
@@ -31,7 +33,7 @@ For each item, return a JSON array where each element has:
 - "marketPriceMax": number or null
 - "source": string (brief explanation of where you found this price, in Ukrainian)
 
-Use current Ukrainian market data. If you cannot find a reliable price for an item,
+Use current Ukrainian market data{REGION_SEARCH_HINT}. If you cannot find a reliable price for an item,
 set marketPrice to null and explain why in the source field.
 Return ONLY the JSON array, no other text.`;
 
@@ -43,6 +45,14 @@ export class GeminiService implements OnModuleInit {
   private model: GenerativeModel;
   private searchModel: GenerativeModel;
 
+  private parseJsonArray<T>(text: string): T[] {
+    const trimmedText = text.trim();
+    const fencedMatch = trimmedText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    const candidate = fencedMatch?.[1]?.trim() || trimmedText;
+
+    return JSON.parse(candidate) as T[];
+  }
+
   onModuleInit() {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -51,9 +61,13 @@ export class GeminiService implements OnModuleInit {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
+    const extractionModelName =
+      process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
+    const searchModelName =
+      process.env.GEMINI_SEARCH_MODEL?.trim() || extractionModelName;
 
     this.model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: extractionModelName,
       generationConfig: {
         temperature: 0,
         responseMimeType: 'application/json',
@@ -61,13 +75,16 @@ export class GeminiService implements OnModuleInit {
     });
 
     this.searchModel = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: searchModelName,
       generationConfig: {
         temperature: 0,
-        responseMimeType: 'application/json',
       },
       tools: [{ googleSearch: {} } as any],
     });
+
+    this.logger.log(
+      `Gemini configured: extraction=${extractionModelName}, search=${searchModelName}`,
+    );
   }
 
   async extractItemsFromText(specificationText: string): Promise<ExtractedItem[]> {
@@ -79,7 +96,7 @@ export class GeminiService implements OnModuleInit {
     const text = result.response.text();
 
     try {
-      const items: any[] = JSON.parse(text);
+      const items = this.parseJsonArray<any>(text);
       return items
         .filter(
           (item) =>
@@ -108,6 +125,7 @@ export class GeminiService implements OnModuleInit {
 
   async searchMarketPrices(
     items: { itemName: string; unit: string | null }[],
+    region?: string | null,
   ): Promise<MarketPriceResult[]> {
     if (!this.searchModel) throw new Error('Gemini not configured');
 
@@ -116,7 +134,7 @@ export class GeminiService implements OnModuleInit {
     // Process in batches of ITEMS_PER_BATCH
     for (let i = 0; i < items.length; i += ITEMS_PER_BATCH) {
       const batch = items.slice(i, i + ITEMS_PER_BATCH);
-      const batchResults = await this.searchMarketPricesBatch(batch);
+      const batchResults = await this.searchMarketPricesBatch(batch, region);
       results.push(...batchResults);
     }
 
@@ -125,6 +143,7 @@ export class GeminiService implements OnModuleInit {
 
   private async searchMarketPricesBatch(
     items: { itemName: string; unit: string | null }[],
+    region?: string | null,
   ): Promise<MarketPriceResult[]> {
     const itemsJson = JSON.stringify(
       items.map((item) => ({
@@ -133,12 +152,20 @@ export class GeminiService implements OnModuleInit {
       })),
     );
 
-    const prompt = MARKET_PRICE_PROMPT.replace('{ITEMS}', itemsJson);
+    const regionContext = region ? `в регіоні "${region}" ` : '';
+    const regionSearchHint = region
+      ? `, пріоритизуй ціни для регіону "${region}", але якщо регіональні дані відсутні — використовуй загальноукраїнські`
+      : '';
+
+    const prompt = MARKET_PRICE_PROMPT
+      .replace('{REGION_CONTEXT}', regionContext)
+      .replace('{REGION_SEARCH_HINT}', regionSearchHint)
+      .replace('{ITEMS}', itemsJson);
     const result = await this.searchModel.generateContent(prompt);
     const text = result.response.text();
 
     try {
-      const parsed: any[] = JSON.parse(text);
+      const parsed = this.parseJsonArray<any>(text);
       return parsed.map((item) => ({
         itemName: typeof item.itemName === 'string' ? item.itemName : '',
         marketPrice:

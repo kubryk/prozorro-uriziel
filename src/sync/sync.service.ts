@@ -154,7 +154,7 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
     );
   }
 
-  @Cron('*/6 * * * * *') // Run every 6 seconds (~500 tenders per 30s)
+  @Cron('*/6 * * * * *') // Run every 6 seconds (~1500 tenders per 30s)
   async handleSync() {
     // If this instance is only a worker, do not fetch new pages
     if (process.env.APP_ROLE === 'WORKER') return;
@@ -179,7 +179,7 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
 
       let currentOffset = syncState.lastOffset;
       let pagesProcessed = 0;
-      const MAX_PAGES_PER_RUN = 1; // Fetch 1 page per run (100 tenders)
+      const MAX_PAGES_PER_RUN = 3; // Fetch 3 pages per run (300 tenders)
 
       while (pagesProcessed < MAX_PAGES_PER_RUN) {
         // 2. Fetch page from Prozorro
@@ -191,12 +191,12 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
           break;
         }
 
-        // 3. Add valid tenders to queue with retries
-        for (const tender of data) {
-          await this.tenderQueue.add(
-            'process-tender',
-            { tenderId: tender.id, dateModified: tender.dateModified },
-            {
+        // 3. Add the page in bulk to reduce Redis round-trips on the MAIN instance.
+        await this.tenderQueue.addBulk(
+          data.map((tender) => ({
+            name: 'process-tender',
+            data: { tenderId: tender.id, dateModified: tender.dateModified },
+            opts: {
               // Deduplicate only the same tender version; newer dateModified values must enqueue.
               jobId: this.buildMainJobId(tender),
               attempts: 5, // Retry up to 5 times if fails
@@ -209,8 +209,8 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
                 count: this.mainQueueFailedJobsToKeep,
               }, // Keep a bounded failed-job history for inspection
             },
-          );
-        }
+          })),
+        );
 
         this.addedCount += data.length;
 

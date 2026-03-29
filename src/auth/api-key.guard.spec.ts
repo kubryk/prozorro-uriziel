@@ -27,6 +27,7 @@ describe('ApiKeyGuard', () => {
       originalUrl: '/search/tenders',
     };
     const context = {
+      getType: () => 'http',
       switchToHttp: () => ({
         getRequest: () => request,
       }),

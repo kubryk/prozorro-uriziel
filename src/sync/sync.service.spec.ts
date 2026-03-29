@@ -21,6 +21,7 @@ describe('SyncService', () => {
   };
   let tenderQueue: {
     add: jest.Mock;
+    addBulk: jest.Mock;
     getJobCounts: jest.Mock;
     getJob: jest.Mock;
   };
@@ -56,6 +57,7 @@ describe('SyncService', () => {
 
     tenderQueue = {
       add: jest.fn().mockResolvedValue(undefined),
+      addBulk: jest.fn().mockResolvedValue([]),
       getJobCounts: jest.fn().mockResolvedValue({
         waiting: 0,
         active: 0,
@@ -77,11 +79,10 @@ describe('SyncService', () => {
   });
 
   it('ставить versioned main jobs, щоб нові апдейти тендера не блокувались старим failed jobId', async () => {
+    // Only 1 findUnique per handleSync — state is updated in-memory after updateMany (no extra DB read)
     prisma.syncState.findUnique
       .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-1' })
-      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-2' })
-      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-2' })
-      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-3' });
+      .mockResolvedValueOnce({ id: 1, lastOffset: 'offset-2' });
     prozorroApi.getTendersPage
       .mockResolvedValueOnce({
         data: [
@@ -105,46 +106,48 @@ describe('SyncService', () => {
     await service.handleSync();
     await service.handleSync();
 
-    expect(tenderQueue.add).toHaveBeenNthCalledWith(
-      1,
-      'process-tender',
+    expect(tenderQueue.addBulk).toHaveBeenNthCalledWith(1, [
       {
-        tenderId: 'tender-1',
-        dateModified: '2026-01-01T00:00:00.000Z',
-      },
-      {
-        jobId: `main-tender-1-${Date.parse('2026-01-01T00:00:00.000Z')}`,
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,
+        name: 'process-tender',
+        data: {
+          tenderId: 'tender-1',
+          dateModified: '2026-01-01T00:00:00.000Z',
         },
-        removeOnComplete: true,
-        removeOnFail: {
-          count: 1000,
-        },
-      },
-    );
-    expect(tenderQueue.add).toHaveBeenNthCalledWith(
-      2,
-      'process-tender',
-      {
-        tenderId: 'tender-1',
-        dateModified: '2026-01-02T00:00:00.000Z',
-      },
-      {
-        jobId: `main-tender-1-${Date.parse('2026-01-02T00:00:00.000Z')}`,
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,
-        },
-        removeOnComplete: true,
-        removeOnFail: {
-          count: 1000,
+        opts: {
+          jobId: `main-tender-1-${Date.parse('2026-01-01T00:00:00.000Z')}`,
+          attempts: 5,
+          backoff: {
+            type: 'exponential',
+            delay: 5000,
+          },
+          removeOnComplete: true,
+          removeOnFail: {
+            count: 1000,
+          },
         },
       },
-    );
+    ]);
+    expect(tenderQueue.addBulk).toHaveBeenNthCalledWith(2, [
+      {
+        name: 'process-tender',
+        data: {
+          tenderId: 'tender-1',
+          dateModified: '2026-01-02T00:00:00.000Z',
+        },
+        opts: {
+          jobId: `main-tender-1-${Date.parse('2026-01-02T00:00:00.000Z')}`,
+          attempts: 5,
+          backoff: {
+            type: 'exponential',
+            delay: 5000,
+          },
+          removeOnComplete: true,
+          removeOnFail: {
+            count: 1000,
+          },
+        },
+      },
+    ]);
   });
 
   it('не логує лише історичні failed jobs як активні помилки, якщо живої роботи вже немає', async () => {

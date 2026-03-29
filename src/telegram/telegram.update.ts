@@ -437,11 +437,34 @@ export class TelegramUpdate {
             select: { tenderID: true },
           });
 
-          const header = `✅ <b>Аналіз завершено: ${this.telegramService.escapeHtml(tender?.tenderID || tenderId)}</b>\n`;
-          const body = this.telegramService.formatAnalysisResult(allDone);
+          const tenderLabel = this.telegramService.escapeHtml(tender?.tenderID || tenderId);
+          const appUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+          const viewUrl = `${appUrl}/price-analysis/view/${tenderId}`;
 
-          await ctx.telegram.sendMessage(chatId, header + body, {
+          const completed = allDone.filter((a) => a.status === 'COMPLETE');
+          const failed = allDone.filter((a) => a.status === 'FAILED');
+          const avgRisk = completed.length > 0
+            ? completed.reduce((s, a) => s + (a.riskScore ?? 0), 0) / completed.length
+            : null;
+          const riskEmoji = avgRisk == null ? '⚪' : avgRisk >= 0.5 ? '🔴' : avgRisk >= 0.2 ? '⚠️' : '🟢';
+          const totalAbove = completed.reduce((s, a) => s + (a.itemsAboveMarket ?? 0), 0);
+          const totalItems = completed.reduce((s, a) => s + (a.totalItems ?? 0), 0);
+
+          const lines = [
+            `✅ <b>Аналіз завершено: ${tenderLabel}</b>`,
+            '',
+            `${riskEmoji} Ризик: <b>${avgRisk != null ? avgRisk.toFixed(2) : 'н/д'}</b>`,
+            `📊 Позицій вище ринку >20%: <b>${totalAbove} з ${totalItems}</b>`,
+            `📄 Контрактів проаналізовано: <b>${completed.length}</b>`,
+            failed.length > 0 ? `❌ Не вдалося: <b>${failed.length}</b>` : null,
+            '',
+            `🔗 Детальний звіт:`,
+            `<code>${viewUrl}</code>`,
+          ].filter(Boolean).join('\n');
+
+          await ctx.telegram.sendMessage(chatId, lines, {
             parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
           });
         }
       } catch (error: unknown) {

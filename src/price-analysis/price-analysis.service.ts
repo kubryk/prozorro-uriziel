@@ -104,7 +104,13 @@ export class PriceAnalysisService {
   async runAnalysisPipeline(analysisId: string): Promise<void> {
     const analysis = await this.prisma.priceAnalysis.findUnique({
       where: { id: analysisId },
-      include: { contract: true },
+      include: {
+        contract: {
+          include: {
+            tender: { select: { customerRegion: true } },
+          },
+        },
+      },
     });
 
     if (!analysis) {
@@ -165,11 +171,14 @@ export class PriceAnalysisService {
       // Step 3: Search market prices
       await this.updateStatus(analysisId, 'SEARCHING_PRICES');
 
+      const region = analysis.contract.tender?.customerRegion ?? null;
+
       const marketPrices = await this.gemini.searchMarketPrices(
         extractedItems.map((item) => ({
           itemName: item.itemName,
           unit: item.unit,
         })),
+        region,
       );
 
       // Update items with market prices and compute deviations

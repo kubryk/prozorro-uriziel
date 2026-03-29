@@ -8,6 +8,7 @@ import { GeminiService } from './gemini.service';
 import { PdfExtractorService } from './pdf-extractor.service';
 import { PriceAnalysisService } from './price-analysis.service';
 import { PriceAnalysisProcessor } from './price-analysis.processor';
+import { PriceAnalysisController } from './price-analysis.controller';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { PriceAnalysisProcessor } from './price-analysis.processor';
       name: PRICE_ANALYSIS_QUEUE_NAME,
     }),
   ],
+  controllers: [PriceAnalysisController],
   providers: [
     GeminiService,
     PdfExtractorService,
