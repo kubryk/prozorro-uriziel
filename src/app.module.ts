@@ -20,6 +20,10 @@ import { PriceAnalysisModule } from './price-analysis/price-analysis.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { HttpThrottlerGuard } from './http-throttler.guard';
 
+const isWorkerRole = process.env.APP_ROLE === 'WORKER';
+const shouldStartTelegramBot =
+  !isWorkerRole && Boolean(process.env.TELEGRAM_BOT_TOKEN);
+
 function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers['x-api-key'];
   const validKey = process.env.API_KEY;
@@ -33,10 +37,6 @@ function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction
 @Module({
   imports: [
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([{
-      ttl: 60000,   // 60 seconds window
-      limit: 100,   // max 100 requests per IP per minute
-    }]),
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST || 'localhost',
@@ -44,41 +44,57 @@ function bullBoardAuthMiddleware(req: Request, res: Response, next: NextFunction
         password: process.env.REDIS_PASSWORD || undefined,
       },
     }),
-    BullBoardModule.forRoot({
-      route: '/queues',
-      adapter: ExpressAdapter,
-    }),
     BullModule.registerQueue({
       name: TENDER_QUEUE_NAME,
     }),
     BullModule.registerQueue({
       name: PRICE_ANALYSIS_QUEUE_NAME,
-    }),
-    BullBoardModule.forFeature({
-      name: TENDER_QUEUE_NAME,
-      adapter: BullMQAdapter,
-    }),
-    BullBoardModule.forFeature({
-      name: PRICE_ANALYSIS_QUEUE_NAME,
-      adapter: BullMQAdapter,
     }),
     PrismaModule,
     ProzorroModule,
     SyncModule,
-    SearchModule,
     ProcessorModule, // Import the processor module as well so the worker starts
-    AuthModule, // Global Auth guard
     PriceAnalysisModule,
-    ...(process.env.TELEGRAM_BOT_TOKEN ? [TelegramModule] : []),
+    ...(!isWorkerRole
+      ? [
+          ThrottlerModule.forRoot([{
+            ttl: 60000,   // 60 seconds window
+            limit: 100,   // max 100 requests per IP per minute
+          }]),
+          BullBoardModule.forRoot({
+            route: '/queues',
+            adapter: ExpressAdapter,
+          }),
+          BullBoardModule.forFeature({
+            name: TENDER_QUEUE_NAME,
+            adapter: BullMQAdapter,
+          }),
+          BullBoardModule.forFeature({
+            name: PRICE_ANALYSIS_QUEUE_NAME,
+            adapter: BullMQAdapter,
+          }),
+          SearchModule,
+          AuthModule, // Global Auth guard
+          ...(shouldStartTelegramBot ? [TelegramModule] : []),
+        ]
+      : []),
   ],
-  controllers: [AppController],
+  controllers: isWorkerRole ? [] : [AppController],
   providers: [
-    AppService,
-    { provide: APP_GUARD, useClass: HttpThrottlerGuard },
+    ...(isWorkerRole
+      ? []
+      : [
+          AppService,
+          { provide: APP_GUARD, useClass: HttpThrottlerGuard },
+        ]),
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
+    if (isWorkerRole) {
+      return;
+    }
+
     consumer
       .apply(bullBoardAuthMiddleware)
       .forRoutes('/queues', '/queues/*path');

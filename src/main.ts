@@ -1,11 +1,20 @@
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { ValidationPipe } from '@nestjs/common'; // Added import for ValidationPipe
 import 'dotenv/config';
 import { AppModule } from './app.module';
 
+const bootstrapLogger = new Logger('Bootstrap');
+
+function isWorkerRole(): boolean {
+  return process.env.APP_ROLE === 'WORKER';
+}
+
 function validateEnv() {
-  const required = ['DATABASE_URL', 'REDIS_HOST', 'API_KEY'];
+  const required = ['DATABASE_URL', 'REDIS_HOST'];
+  if (!isWorkerRole()) {
+    required.push('API_KEY');
+  }
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
@@ -14,6 +23,15 @@ function validateEnv() {
 
 async function bootstrap() {
   validateEnv();
+
+  if (isWorkerRole()) {
+    await NestFactory.createApplicationContext(AppModule);
+    bootstrapLogger.log(
+      'Started in WORKER mode. HTTP server, Swagger, Bull Board, and Telegram bot are disabled.',
+    );
+    return;
+  }
+
   const app = await NestFactory.create(AppModule);
 
   // CORS: restrict to CORS_ORIGIN env var (comma-separated for multiple origins)
