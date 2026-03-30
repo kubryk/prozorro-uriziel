@@ -235,6 +235,7 @@ model PriceAnalysis {
   itemsAboveMarket    Int?
   riskScore           Float?              // 0.0–1.0
   sourceDocumentTitle String?
+  sourceDocumentUrl   String?
   telegramChatId      String?             // Chat to send results back to
   telegramMessageId   Int?                // Status message to edit
   extractedItems      PriceAnalysisItem[]

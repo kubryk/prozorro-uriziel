@@ -48,7 +48,10 @@ interface AnalysisForDisplay {
 
 @Injectable()
 export class TelegramService {
-  formatAmount(amount: number | null | undefined, currency?: string | null): string {
+  formatAmount(
+    amount: number | null | undefined,
+    currency?: string | null,
+  ): string {
     if (amount == null) return 'н/д';
     const formatted = amount.toLocaleString('uk-UA', {
       minimumFractionDigits: 2,
@@ -63,7 +66,9 @@ export class TelegramService {
 
     return [
       `${prefix}📋 <b>${this.escapeHtml(tender.tenderID || tender.id)}</b>`,
-      tender.title ? `   ${this.escapeHtml(this.truncate(tender.title, 80))}` : null,
+      tender.title
+        ? `   ${this.escapeHtml(this.truncate(tender.title, 80))}`
+        : null,
       `   💰 ${this.formatAmount(tender.amount, tender.currency)} | 📊 ${tender.status || 'н/д'}`,
       tender.customerName
         ? `   🏢 ${this.escapeHtml(tender.customerName)}`
@@ -109,6 +114,14 @@ export class TelegramService {
       const contractLabel = a.contract?.contractID || 'Контракт';
       const supplierLabel = a.contract?.supplierName || '';
 
+      if (a.status === 'SKIPPED') {
+        lines.push(
+          `\n📄 ${this.escapeHtml(contractLabel)} (${this.escapeHtml(supplierLabel)}) — ⏭️ Пропущено`,
+          `   ${this.escapeHtml(a.errorMessage || 'Контракт не підлягає аналізу')}`,
+        );
+        continue;
+      }
+
       if (a.status === 'FAILED') {
         lines.push(
           `\n📄 ${this.escapeHtml(contractLabel)} (${this.escapeHtml(supplierLabel)}) — ❌ Помилка`,
@@ -118,9 +131,7 @@ export class TelegramService {
       }
 
       if (a.status !== 'COMPLETE') {
-        lines.push(
-          `\n📄 ${this.escapeHtml(contractLabel)} — ⏳ ${a.status}`,
-        );
+        lines.push(`\n📄 ${this.escapeHtml(contractLabel)} — ⏳ ${a.status}`);
         continue;
       }
 
@@ -148,15 +159,14 @@ export class TelegramService {
         }
 
         if (a.extractedItems.length > 10) {
-          lines.push(
-            `   ... ще ${a.extractedItems.length - 10} позицій`,
-          );
+          lines.push(`   ... ще ${a.extractedItems.length - 10} позицій`);
         }
       }
     }
 
     // Summary
     const completed = analyses.filter((a) => a.status === 'COMPLETE');
+    const skipped = analyses.filter((a) => a.status === 'SKIPPED');
     if (completed.length > 0) {
       const avgRisk =
         completed.reduce((sum, a) => sum + (a.riskScore || 0), 0) /
@@ -174,6 +184,10 @@ export class TelegramService {
         `\n<b>Загальний ризик:</b> ${this.riskEmoji(avgRisk)} ${avgRisk.toFixed(2)}`,
         `<b>Завищення:</b> ${totalAbove} з ${totalItems} позицій вище ринку на >20%`,
       );
+    }
+
+    if (skipped.length > 0) {
+      lines.push(`\n<b>Пропущено контрактів:</b> ${skipped.length}`);
     }
 
     return lines.join('\n');
@@ -201,12 +215,18 @@ export class TelegramService {
     const navRow: any[] = [];
     if (currentPage > 0) {
       navRow.push(
-        Markup.button.callback('◀ Назад', `page:${searchKey}:${currentPage - 1}`),
+        Markup.button.callback(
+          '◀ Назад',
+          `page:${searchKey}:${currentPage - 1}`,
+        ),
       );
     }
     if (currentPage < totalPages - 1) {
       navRow.push(
-        Markup.button.callback('▶ Далі', `page:${searchKey}:${currentPage + 1}`),
+        Markup.button.callback(
+          '▶ Далі',
+          `page:${searchKey}:${currentPage + 1}`,
+        ),
       );
     }
     if (navRow.length > 0) buttons.push(navRow);

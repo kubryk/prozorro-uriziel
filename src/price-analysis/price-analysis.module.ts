@@ -9,6 +9,7 @@ import { PdfExtractorService } from './pdf-extractor.service';
 import { PriceAnalysisService } from './price-analysis.service';
 import { PriceAnalysisProcessor } from './price-analysis.processor';
 import { PriceAnalysisController } from './price-analysis.controller';
+import { MistralOcrService } from './mistral-ocr.service';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { PriceAnalysisController } from './price-analysis.controller';
   providers: [
     GeminiService,
     PdfExtractorService,
+    MistralOcrService,
     PriceAnalysisService,
     PriceAnalysisProcessor,
   ],

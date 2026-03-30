@@ -184,10 +184,7 @@ describe('SearchService', () => {
       where: {},
       skip: 0,
       take: 20,
-      orderBy: [
-        { dateCreated: 'desc' },
-        { dateModified: 'desc' },
-      ],
+      orderBy: [{ dateCreated: 'desc' }, { dateModified: 'desc' }],
       include: {
         contracts: {
           select: {
@@ -212,10 +209,7 @@ describe('SearchService', () => {
       where: {},
       skip: 0,
       take: 20,
-      orderBy: [
-        { amount: 'asc' },
-        { dateCreated: 'desc' },
-      ],
+      orderBy: [{ amount: 'asc' }, { dateCreated: 'desc' }],
       include: {
         contracts: {
           select: {
@@ -246,6 +240,27 @@ describe('SearchService', () => {
         tender: {},
       },
     });
+  });
+
+  it('не рахує totals повторно, коли includeTotals=false', async () => {
+    prisma.tender.findMany.mockResolvedValue([{ id: 't1' }]);
+
+    await expect(
+      service.searchTenders({
+        skip: 5,
+        take: 5,
+        includeTotals: false,
+      }),
+    ).resolves.toMatchObject({
+      data: [{ id: 't1' }],
+      total: 0,
+      relatedContractTotal: 0,
+      skip: 5,
+      take: 5,
+    });
+
+    expect(prisma.tender.count).not.toHaveBeenCalled();
+    expect(prisma.contract.count).not.toHaveBeenCalled();
   });
 
   it('робить dateTo inclusive до кінця доби для контрактів', async () => {
@@ -329,10 +344,7 @@ describe('SearchService', () => {
       where: {},
       skip: 0,
       take: 20,
-      orderBy: [
-        { amount: 'asc' },
-        { dateSigned: 'desc' },
-      ],
+      orderBy: [{ amount: 'asc' }, { dateSigned: 'desc' }],
       include: {
         tender: {
           select: {
@@ -358,10 +370,7 @@ describe('SearchService', () => {
       where: {},
       skip: 0,
       take: 20,
-      orderBy: [
-        { dateSigned: 'asc' },
-        { dateModified: 'desc' },
-      ],
+      orderBy: [{ dateSigned: 'asc' }, { dateModified: 'desc' }],
       include: {
         tender: {
           select: {
@@ -402,9 +411,7 @@ describe('SearchService', () => {
   });
 
   it('повертає агреговану статистику по тендерах, контрактах і синку', async () => {
-    prisma.tender.count
-      .mockResolvedValueOnce(11)
-      .mockResolvedValueOnce(0);
+    prisma.tender.count.mockResolvedValueOnce(11).mockResolvedValueOnce(0);
     prisma.contract.count.mockResolvedValue(7);
     prisma.syncState.findUnique.mockResolvedValue({
       updatedAt: new Date('2026-03-08T10:00:00.000Z'),
@@ -418,9 +425,7 @@ describe('SearchService', () => {
   });
 
   it('повертає lastSync як null, якщо в черзі є backlog або лишилися incomplete тендери', async () => {
-    prisma.tender.count
-      .mockResolvedValueOnce(11)
-      .mockResolvedValueOnce(2);
+    prisma.tender.count.mockResolvedValueOnce(11).mockResolvedValueOnce(2);
     prisma.contract.count.mockResolvedValue(7);
     prisma.syncState.findUnique.mockResolvedValue({
       updatedAt: new Date('2026-03-08T10:00:00.000Z'),

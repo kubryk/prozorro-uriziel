@@ -2,6 +2,7 @@ import { Controller, Get, Param, NotFoundException, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { Public } from '../auth/api-key.guard';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildFinalContractAnalysis } from './final-contract-analysis';
 
 function riskColor(score: number | null | undefined): string {
   if (score == null) return '#6b7280';
@@ -24,7 +25,10 @@ function deviationClass(dev: number | null | undefined): string {
   return 'text-green';
 }
 
-function formatAmount(amount: number | null | undefined, currency = 'UAH'): string {
+function formatAmount(
+  amount: number | null | undefined,
+  currency = 'UAH',
+): string {
   if (amount == null) return 'н/д';
   return `${amount.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
 }
@@ -58,6 +62,7 @@ function renderHtml(data: {
     itemsAboveMarket?: number | null;
     errorMessage?: string | null;
     sourceDocumentTitle?: string | null;
+    sourceDocumentUrl?: string | null;
     createdAt: Date;
     contract: {
       contractID?: string | null;
@@ -82,10 +87,14 @@ function renderHtml(data: {
   }>;
 }): string {
   const { tender, analyses } = data;
+  const prozorroTenderUrl = tender.tenderID
+    ? `https://prozorro.gov.ua/tender/${encodeURIComponent(tender.tenderID)}`
+    : null;
 
   const overallRisk =
     analyses.length > 0
-      ? analyses.reduce((sum, a) => sum + (a.riskScore ?? 0), 0) / analyses.length
+      ? analyses.reduce((sum, a) => sum + (a.riskScore ?? 0), 0) /
+        analyses.length
       : null;
 
   const completedAnalyses = analyses.filter((a) => a.status === 'COMPLETE');
@@ -101,18 +110,47 @@ function renderHtml(data: {
   const analysisRows = analyses
     .map((analysis) => {
       const contractLabel =
-        analysis.contract.contractID || analysis.contract.contractNumber || analysis.id;
+        analysis.contract.contractID ||
+        analysis.contract.contractNumber ||
+        analysis.id;
+      const links: string[] = [];
+      if (prozorroTenderUrl) {
+        links.push(
+          `<a href="${prozorroTenderUrl}" target="_blank" class="chip-link">Тендер на Prozorro</a>`,
+        );
+      }
+      if (analysis.contract.contractID) {
+        const contractDocsUrl = `https://prozorro.gov.ua/tender/${encodeURIComponent(tender.tenderID || '')}?tab=contracts`;
+        links.push(
+          `<a href="${contractDocsUrl}" target="_blank" class="chip-link">Контракт на Prozorro</a>`,
+        );
+      }
+      if (analysis.sourceDocumentUrl) {
+        links.push(
+          `<a href="${escapeHtml(analysis.sourceDocumentUrl)}" target="_blank" class="chip-link chip-link--doc">Проаналізований документ</a>`,
+        );
+      }
 
       if (analysis.status !== 'COMPLETE') {
         const statusIcon =
-          analysis.status === 'FAILED' ? '❌' : '⏳';
+          analysis.status === 'FAILED'
+            ? '❌'
+            : analysis.status === 'SKIPPED'
+              ? '⏭️'
+              : '⏳';
+        const statusMessage =
+          analysis.status === 'FAILED' || analysis.status === 'SKIPPED'
+            ? escapeHtml(analysis.errorMessage)
+            : 'Аналіз ще виконується...';
         return `
         <div class="contract-card error">
           <div class="contract-header">
             <span class="contract-id">${statusIcon} Контракт ${escapeHtml(contractLabel)}</span>
             <span class="supplier">${escapeHtml(analysis.contract.supplierName)}</span>
           </div>
-          <p class="error-msg">${analysis.status === 'FAILED' ? escapeHtml(analysis.errorMessage) : 'Аналіз ще виконується...'}</p>
+          ${links.length > 0 ? `<div class="links-row">${links.join('')}</div>` : ''}
+          ${analysis.sourceDocumentTitle ? `<div class="doc-badge">${escapeHtml(analysis.sourceDocumentTitle)}</div>` : ''}
+          <p class="error-msg">${statusMessage}</p>
         </div>`;
       }
 
@@ -136,27 +174,39 @@ function renderHtml(data: {
         .join('');
 
       const color = riskColor(analysis.riskScore);
+      // TODO: re-enable when market price search is active
+      // const finalAnalysis = buildFinalContractAnalysis({
+      //   contractAmount: analysis.contract.amount,
+      //   currency: analysis.contract.currency,
+      //   totalItems: analysis.totalItems,
+      //   itemsAboveMarket: analysis.itemsAboveMarket,
+      //   extractedItems: analysis.extractedItems,
+      // });
+
       return `
       <div class="contract-card">
         <div class="contract-header">
-          <div>
-            <span class="contract-id">📄 Контракт ${escapeHtml(contractLabel)}</span>
-            ${analysis.contract.contractNumber ? `<span class="contract-num"> №${escapeHtml(analysis.contract.contractNumber)}</span>` : ''}
+          <div class="contract-title-row">
+            <span class="contract-id">Контракт ${escapeHtml(contractLabel)}</span>
+            <div class="risk-badge" style="background:${color}">
+              ${riskLabel(analysis.riskScore)} ${analysis.riskScore?.toFixed(2) ?? '—'}
+            </div>
           </div>
-          <div class="contract-meta">
+          ${analysis.contract.contractNumber ? `<div class="contract-num">№ ${escapeHtml(analysis.contract.contractNumber)}</div>` : ''}
+          <div class="contract-parties">
             <span class="supplier">${escapeHtml(analysis.contract.supplierName)}</span>
-            ${analysis.contract.supplierEdrpou ? `<span class="edrpou">(${escapeHtml(analysis.contract.supplierEdrpou)})</span>` : ''}
+            ${analysis.contract.supplierEdrpou ? `<span class="edrpou">${escapeHtml(analysis.contract.supplierEdrpou)}</span>` : ''}
           </div>
-          <div class="contract-meta">
-            <span>Сума: <b>${formatAmount(analysis.contract.amount, analysis.contract.currency ?? 'UAH')}</b></span>
-            ${analysis.contract.dateSigned ? `<span> | Підписано: ${new Date(analysis.contract.dateSigned).toLocaleDateString('uk-UA')}</span>` : ''}
+          <div class="contract-details">
+            <span class="detail"><span class="detail-label">Сума</span> ${formatAmount(analysis.contract.amount, analysis.contract.currency ?? 'UAH')}</span>
+            ${analysis.contract.dateSigned ? `<span class="detail"><span class="detail-label">Підписано</span> ${new Date(analysis.contract.dateSigned).toLocaleDateString('uk-UA')}</span>` : ''}
+            <span class="detail"><span class="detail-label">Позицій</span> ${analysis.totalItems ?? 0}</span>
+            <span class="detail detail--warn"><span class="detail-label">Вище ринку</span> ${analysis.itemsAboveMarket ?? 0}</span>
           </div>
         </div>
-        <div class="risk-badge" style="background:${color}">
-          ${riskLabel(analysis.riskScore)}: ${analysis.riskScore?.toFixed(2) ?? '—'}
-        </div>
-        <p class="stats">${analysis.itemsAboveMarket ?? 0} з ${analysis.totalItems ?? 0} позицій вище ринку на >20%</p>
-        ${analysis.sourceDocumentTitle ? `<p class="doc-source">📎 Документ: ${escapeHtml(analysis.sourceDocumentTitle)}</p>` : ''}
+        ${links.length > 0 ? `<div class="links-row">${links.join('')}</div>` : ''}
+        ${analysis.sourceDocumentTitle ? `<div class="doc-badge">${escapeHtml(analysis.sourceDocumentTitle)}</div>` : ''}
+        <!-- final-analysis blocks disabled — re-enable with market search -->
         <div class="table-wrap">
           <table>
             <thead>
@@ -176,6 +226,23 @@ function renderHtml(data: {
     })
     .join('');
 
+  const riskBg =
+    overallRisk == null
+      ? '#f8fafc'
+      : overallRisk >= 0.5
+        ? '#fef2f2'
+        : overallRisk >= 0.2
+          ? '#fffbeb'
+          : '#f0fdf4';
+  const riskBorder =
+    overallRisk == null
+      ? '#e2e8f0'
+      : overallRisk >= 0.5
+        ? '#fecaca'
+        : overallRisk >= 0.2
+          ? '#fde68a'
+          : '#bbf7d0';
+
   return `<!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -184,51 +251,87 @@ function renderHtml(data: {
   <title>Аналіз цін — ${escapeHtml(tender.tenderID)}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f1f5f9; color: #1e293b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f1f5f9; color: #1e293b; line-height: 1.5; }
     .page { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
 
     /* Header */
-    .header { background: #1e293b; color: #fff; border-radius: 12px; padding: 24px; margin-bottom: 24px; }
-    .header h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 8px; }
-    .header .meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 0.9rem; color: #94a3b8; margin-top: 12px; }
-    .header .meta span { display: flex; align-items: center; gap: 4px; }
+    .header { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #fff; border-radius: 16px; padding: 28px 32px; margin-bottom: 20px; }
+    .header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .header h1 { font-size: 1.1rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.02em; }
+    .header h1 a { color: #93c5fd; text-decoration: none; border-bottom: 1px dashed #93c5fd60; }
+    .header h1 a:hover { color: #bfdbfe; border-bottom-color: #bfdbfe; }
+    .tender-title { font-size: 1.3rem; font-weight: 700; color: #f1f5f9; margin-top: 8px; line-height: 1.4; }
+    .prozorro-btn { display: inline-flex; align-items: center; gap: 6px; background: #334155; color: #93c5fd; font-size: 0.82rem;
+      font-weight: 600; padding: 7px 14px; border-radius: 8px; text-decoration: none; white-space: nowrap; transition: background .15s; }
+    .prozorro-btn:hover { background: #475569; color: #bfdbfe; }
+    .header-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 20px; }
+    .header-cell { background: #334155; border-radius: 8px; padding: 10px 14px; }
+    .header-cell .label { font-size: 0.72rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px; }
+    .header-cell .value { font-size: 0.9rem; color: #e2e8f0; font-weight: 600; }
 
     /* Overall risk */
     .overall-risk { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
-      background: #fff; border-radius: 12px; padding: 20px 24px; margin-bottom: 24px; border: 1px solid #e2e8f0; gap: 16px; }
-    .risk-score { font-size: 2rem; font-weight: 800; }
-    .risk-stats { display: flex; gap: 24px; flex-wrap: wrap; }
-    .risk-stat { text-align: center; }
-    .risk-stat .val { font-size: 1.5rem; font-weight: 700; }
-    .risk-stat .lbl { font-size: 0.8rem; color: #64748b; }
+      background: ${riskBg}; border-radius: 14px; padding: 22px 28px; margin-bottom: 24px;
+      border: 2px solid ${riskBorder}; gap: 16px; }
+    .risk-main { }
+    .risk-main .label { font-size: 0.8rem; color: #64748b; margin-bottom: 4px; }
+    .risk-score { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em; }
+    .risk-stats { display: flex; gap: 28px; flex-wrap: wrap; }
+    .risk-stat { text-align: center; min-width: 70px; }
+    .risk-stat .val { font-size: 1.6rem; font-weight: 700; }
+    .risk-stat .lbl { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
 
     /* Contract cards */
-    .contract-card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
-    .contract-card.error { border-color: #fca5a5; background: #fff7f7; }
-    .contract-header { margin-bottom: 16px; }
-    .contract-id { font-size: 1rem; font-weight: 700; }
-    .contract-num { font-weight: 400; color: #64748b; }
-    .supplier { font-size: 0.95rem; color: #334155; margin-top: 4px; display: block; }
-    .edrpou { color: #94a3b8; font-size: 0.85rem; }
-    .contract-meta { font-size: 0.85rem; color: #64748b; margin-top: 4px; }
-    .risk-badge { display: inline-block; color: #fff; font-weight: 700; font-size: 0.85rem;
-      padding: 4px 12px; border-radius: 20px; margin-bottom: 8px; }
-    .stats { font-size: 0.9rem; color: #64748b; margin-bottom: 8px; }
-    .doc-source { font-size: 0.8rem; color: #94a3b8; margin-bottom: 12px; }
+    .contract-card { background: #fff; border-radius: 14px; padding: 0; margin-bottom: 20px; border: 1px solid #e2e8f0;
+      overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .contract-card.error { border-color: #fca5a5; background: #fff7f7; padding: 24px; }
+    .contract-header { padding: 20px 24px 16px; border-bottom: 1px solid #f1f5f9; }
+    .contract-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .contract-id { font-size: 1.05rem; font-weight: 700; color: #0f172a; }
+    .contract-num { font-size: 0.85rem; color: #64748b; margin-top: 2px; }
+    .contract-parties { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
+    .supplier { font-size: 0.95rem; color: #334155; font-weight: 500; }
+    .edrpou { color: #94a3b8; font-size: 0.82rem; background: #f1f5f9; padding: 1px 8px; border-radius: 4px; }
+    .contract-details { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; }
+    .detail { font-size: 0.85rem; color: #334155; }
+    .detail-label { color: #94a3b8; font-size: 0.75rem; display: block; }
+    .detail--warn .detail-label { color: #dc2626; }
+    .risk-badge { display: inline-flex; align-items: center; color: #fff; font-weight: 700; font-size: 0.8rem;
+      padding: 5px 14px; border-radius: 20px; flex-shrink: 0; }
     .error-msg { color: #dc2626; font-size: 0.9rem; }
 
+    /* Links */
+    .links-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 24px; background: #f8fafc; border-bottom: 1px solid #f1f5f9; }
+    .chip-link { display: inline-flex; align-items: center; gap: 4px; font-size: 0.8rem; font-weight: 500; color: #2563eb;
+      background: #eff6ff; padding: 5px 12px; border-radius: 6px; text-decoration: none; transition: background .15s; }
+    .chip-link:hover { background: #dbeafe; }
+    .chip-link--doc { color: #7c3aed; background: #f5f3ff; }
+    .chip-link--doc:hover { background: #ede9fe; }
+    .doc-badge { font-size: 0.78rem; color: #94a3b8; padding: 8px 24px 0; }
+
+    /* Final analysis */
+    .final-analysis { padding: 16px 24px 0; }
+    .final-analysis-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .final-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; }
+    .final-card--wide { grid-column: 1 / -1; }
+    .final-title { font-size: 0.88rem; font-weight: 700; color: #1e293b; margin-bottom: 10px; }
+    .final-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font-size: 0.84rem; color: #475569; padding: 4px 0; }
+    .final-row strong { color: #0f172a; text-align: right; }
+    .final-comment { margin-top: 10px; font-size: 0.84rem; color: #334155; line-height: 1.6; }
+
     /* Table */
-    .table-wrap { overflow-x: auto; margin-top: 16px; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    th { background: #f8fafc; font-weight: 600; text-align: left; padding: 10px 12px;
-      border-bottom: 2px solid #e2e8f0; white-space: nowrap; }
-    td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    th { background: #f8fafc; font-weight: 600; text-align: left; padding: 10px 16px;
+      border-bottom: 2px solid #e2e8f0; white-space: nowrap; color: #475569; font-size: 0.78rem;
+      text-transform: uppercase; letter-spacing: 0.03em; }
+    td { padding: 10px 16px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
     .num { text-align: right; white-space: nowrap; }
-    .source { font-size: 0.78rem; color: #94a3b8; max-width: 240px; }
+    .source { font-size: 0.76rem; color: #94a3b8; max-width: 240px; }
 
     /* Row coloring */
     .text-red { color: #dc2626; font-weight: 700; }
-    .text-red-row td { background: #fff5f5; }
+    .text-red-row td { background: #fef2f2; }
     .text-yellow { color: #d97706; font-weight: 600; }
     .text-yellow-row td { background: #fffbeb; }
     .text-green { color: #16a34a; }
@@ -242,27 +345,40 @@ function renderHtml(data: {
       border-top: 1px solid #e2e8f0; }
 
     @media (max-width: 640px) {
-      .overall-risk { flex-direction: column; }
-      .risk-stats { gap: 12px; }
+      .header { padding: 20px 16px; }
+      .header-grid { grid-template-columns: 1fr 1fr; }
+      .overall-risk { flex-direction: column; padding: 16px 20px; }
+      .risk-stats { gap: 16px; }
+      .contract-header { padding: 16px; }
+      .links-row { padding: 10px 16px; }
+      .final-analysis { padding: 12px 16px 0; }
+      .final-analysis-grid { grid-template-columns: 1fr; }
+      td, th { padding: 8px 10px; }
     }
   </style>
 </head>
 <body>
   <div class="page">
     <div class="header">
-      <h1>Аналіз цін тендеру ${escapeHtml(tender.tenderID || '—')}</h1>
-      ${tender.title ? `<p style="color:#cbd5e1;margin-top:6px;">${escapeHtml(tender.title)}</p>` : ''}
-      <div class="meta">
-        ${tender.customerName ? `<span>🏢 ${escapeHtml(tender.customerName)}${tender.customerEdrpou ? ` (${escapeHtml(tender.customerEdrpou)})` : ''}</span>` : ''}
-        ${tender.status ? `<span>📊 ${escapeHtml(tender.status)}</span>` : ''}
-        ${tender.amount != null ? `<span>💰 ${formatAmount(tender.amount, tender.currency ?? 'UAH')}</span>` : ''}
-        ${tender.procurementMethodType ? `<span>📋 ${escapeHtml(tender.procurementMethodType)}</span>` : ''}
+      <div class="header-top">
+        <div>
+          <h1>Аналіз цін тендеру ${prozorroTenderUrl ? `<a href="${prozorroTenderUrl}" target="_blank">${escapeHtml(tender.tenderID)}</a>` : escapeHtml(tender.tenderID || '—')}</h1>
+          ${tender.title ? `<div class="tender-title">${escapeHtml(tender.title)}</div>` : ''}
+        </div>
+        ${prozorroTenderUrl ? `<a href="${prozorroTenderUrl}" target="_blank" class="prozorro-btn">&#8599; Відкрити на Prozorro</a>` : ''}
+      </div>
+      <div class="header-grid">
+        ${tender.customerName ? `<div class="header-cell"><div class="label">Замовник</div><div class="value">${escapeHtml(tender.customerName)}${tender.customerEdrpou ? ` <span style="color:#94a3b8;font-weight:400">${escapeHtml(tender.customerEdrpou)}</span>` : ''}</div></div>` : ''}
+        ${tender.status ? `<div class="header-cell"><div class="label">Статус</div><div class="value">${escapeHtml(tender.status)}</div></div>` : ''}
+        ${tender.amount != null ? `<div class="header-cell"><div class="label">Очікувана вартість</div><div class="value">${formatAmount(tender.amount, tender.currency ?? 'UAH')}</div></div>` : ''}
+        ${tender.procurementMethodType ? `<div class="header-cell"><div class="label">Метод закупівлі</div><div class="value">${escapeHtml(tender.procurementMethodType)}</div></div>` : ''}
+        ${tender.mainProcurementCategory ? `<div class="header-cell"><div class="label">Категорія</div><div class="value">${escapeHtml(tender.mainProcurementCategory)}</div></div>` : ''}
       </div>
     </div>
 
     <div class="overall-risk">
-      <div>
-        <div style="font-size:0.85rem;color:#64748b;margin-bottom:4px;">Загальна оцінка ризику</div>
+      <div class="risk-main">
+        <div class="label">Загальна оцінка цінового ризику</div>
         <div class="risk-score" style="color:${riskColor(overallRisk)}">${riskLabel(overallRisk)} — ${overallRisk != null ? overallRisk.toFixed(2) : '—'}</div>
       </div>
       <div class="risk-stats">

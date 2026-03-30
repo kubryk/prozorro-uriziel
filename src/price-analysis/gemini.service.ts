@@ -1,6 +1,19 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
-import { ExtractedItem, MarketPriceResult } from './price-analysis.types';
+import {
+  GoogleGenerativeAI,
+  GenerativeModel,
+  type Part,
+} from '@google/generative-ai';
+import {
+  ContractItemReference,
+  ExtractedItem,
+  MarketPriceResult,
+  MarketSearchItem,
+} from './price-analysis.types';
+import {
+  buildMarketSearchContext,
+  normalizeMarketPriceResult,
+} from './market-unit-normalizer';
 
 const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
@@ -15,23 +28,65 @@ Return a JSON array where each element has:
 
 Only include items where you can identify both a name and a unit price.
 If the text contains a table, extract each row as a separate item.
+Do NOT use the general subject or title of the contract as an item.
+Do NOT treat the total contract amount as a unit price unless the document explicitly shows a per-unit price for a specific row.
+Preserve the most specific wording visible in the document row.
+Preserve brands, trade names, manufacturers, model codes, article numbers, dosage, and package markers like "№30" whenever they are visible in the PDF.
+Use official contract items from Prozorro only as weak validation when the PDF row is partially unreadable.
+Never replace a more detailed PDF item name with a shorter or more generic official item name from Prozorro.
+If the text does not contain a clear specification or a line-item table with explicit pricing, return an empty JSON array.
+{REFERENCE_ITEMS_BLOCK}
 Return ONLY the JSON array, no other text.
 
 Text:
 `;
 
+const IMAGE_EXTRACTION_PROMPT = `You are analyzing page images from a Ukrainian public procurement contract specification.
+Extract all line items with explicit per-unit prices visible in the images.
+
+Return a JSON array where each element has:
+- "itemName": string
+- "unitPrice": number
+- "quantity": number or null
+- "unit": string or null
+
+Rules:
+- Only include rows where a specific item name and a specific per-unit price are visible.
+- Do NOT use the general subject or title of the contract as an item.
+- Do NOT treat the total contract amount as a unit price.
+- If the images do not contain a clear specification or a line-item table with explicit pricing, return an empty JSON array.
+- Preserve the most specific wording visible in the document row.
+- Preserve brands, trade names, manufacturers, model codes, article numbers, dosage, and package markers like "№30" whenever they are visible in the PDF image.
+- Use official contract items from Prozorro only as weak validation or to restore a clearly unreadable fragment.
+- Never replace a more detailed PDF item name with a shorter or more generic official item name from Prozorro.
+- Do not invent rows that are absent from the visible specification.
+{REFERENCE_ITEMS_BLOCK}
+- Return ONLY the JSON array, no other text.`;
+
 const MARKET_PRICE_PROMPT = `For each of the following items from a Ukrainian public procurement contract,
-find the current average market price {REGION_CONTEXT}(in UAH per unit).
+find the current average market price {REGION_CONTEXT}(in UAH per contract unit).
 
 Items:
 {ITEMS}
 
+Critical unit-matching rules:
+- The returned price must match the contract unit, not just the product name.
+- Carefully distinguish "шт/штука" from "упаковка/пачка/блістер/коробка/комплект".
+- For medicines and medical supplies, item names may contain pack-size markers like "№10", "№30", "№100". Market listings often show prices for the whole pack.
+- If the contract unit is a single piece and the market listing is a package price, convert to one piece only when the number of pieces in the package is explicit and reliable.
+- If the contract unit is a package and the market listing is a price per piece, convert to one package only when the package size is explicit and reliable.
+- If reliable conversion is not possible, set marketPrice to null and explain the unit mismatch in the source.
+- Do not compare different dosage forms, strengths, package sizes, or non-equivalent units.
+
 For each item, return a JSON array where each element has:
 - "itemName": string (same as input)
-- "marketPrice": number or null (average price in UAH per unit)
+- "marketPrice": number or null (average price in UAH per contract unit)
 - "marketPriceMin": number or null
 - "marketPriceMax": number or null
-- "source": string (brief explanation of where you found this price, in Ukrainian)
+- "pricingUnit": string or null (unit from the market listing before normalization, e.g. "упаковка №30", "1 шт", "блістер")
+- "unitsPerPackage": number or null (only when explicit and reliable)
+- "normalizedToContractUnit": boolean
+- "source": string (brief explanation in Ukrainian; mention if the price was normalized to the contract unit)
 
 Use current Ukrainian market data{REGION_SEARCH_HINT}. If you cannot find a reliable price for an item,
 set marketPrice to null and explain why in the source field.
@@ -82,6 +137,59 @@ export class GeminiService implements OnModuleInit {
     return JSON.parse(candidate) as T[];
   }
 
+  private normalizeExtractedItems(items: any[]): ExtractedItem[] {
+    return items
+      .filter(
+        (item) =>
+          typeof item.itemName === 'string' &&
+          item.itemName.length > 0 &&
+          typeof item.unitPrice === 'number' &&
+          item.unitPrice > 0,
+      )
+      .map((item) => ({
+        itemName: item.itemName,
+        unitPrice: item.unitPrice,
+        quantity:
+          typeof item.quantity === 'number' && item.quantity > 0
+            ? item.quantity
+            : null,
+        unit:
+          typeof item.unit === 'string' && item.unit.length > 0
+            ? item.unit
+            : null,
+      }));
+  }
+
+  private buildReferenceItemsBlock(
+    referenceItems: ContractItemReference[],
+  ): string {
+    if (referenceItems.length === 0) {
+      return '';
+    }
+
+    const lines = referenceItems.map((item, index) => {
+      const details = [
+        item.quantity != null ? `кількість: ${item.quantity}` : null,
+        item.unit ? `одиниця: ${item.unit}` : null,
+        item.classificationDescription
+          ? `класифікація: ${item.classificationDescription}`
+          : null,
+      ].filter(Boolean);
+
+      return `${index + 1}. ${item.itemName}${details.length > 0 ? ` (${details.join(', ')})` : ''}`;
+    });
+
+    return [
+      '',
+      'Official contract items from Prozorro are coarse metadata and may omit trade names, brands, article numbers, dosage, packaging, or model codes.',
+      'Use them only as weak grounding when a PDF row is partially unreadable:',
+      ...lines,
+      'Never replace a more detailed PDF row with a simpler Prozorro item name.',
+      'If no clear match exists, rely only on the visible specification rows.',
+      '',
+    ].join('\n');
+  }
+
   onModuleInit() {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -116,45 +224,72 @@ export class GeminiService implements OnModuleInit {
     );
   }
 
-  async extractItemsFromText(specificationText: string): Promise<ExtractedItem[]> {
+  async extractItemsFromText(
+    specificationText: string,
+    referenceItems: ContractItemReference[] = [],
+  ): Promise<ExtractedItem[]> {
     if (!this.model) throw new Error('Gemini not configured');
+    const prompt = EXTRACTION_PROMPT.replace(
+      '{REFERENCE_ITEMS_BLOCK}',
+      this.buildReferenceItemsBlock(referenceItems),
+    );
 
     const result = await this.callWithRetry(
-      () => this.model.generateContent(EXTRACTION_PROMPT + specificationText),
+      () => this.model.generateContent(prompt + specificationText),
       'extractItems',
     );
     const text = result.response.text();
 
     try {
-      const items = this.parseJsonArray<any>(text);
-      return items
-        .filter(
-          (item) =>
-            typeof item.itemName === 'string' &&
-            item.itemName.length > 0 &&
-            typeof item.unitPrice === 'number' &&
-            item.unitPrice > 0,
-        )
-        .map((item) => ({
-          itemName: item.itemName,
-          unitPrice: item.unitPrice,
-          quantity:
-            typeof item.quantity === 'number' && item.quantity > 0
-              ? item.quantity
-              : null,
-          unit:
-            typeof item.unit === 'string' && item.unit.length > 0
-              ? item.unit
-              : null,
-        }));
+      return this.normalizeExtractedItems(this.parseJsonArray<any>(text));
     } catch {
-      this.logger.error(`Failed to parse Gemini extraction response: ${text.substring(0, 200)}`);
+      this.logger.error(
+        `Failed to parse Gemini extraction response: ${text.substring(0, 200)}`,
+      );
       throw new Error('Failed to parse item extraction response from Gemini');
     }
   }
 
+  async extractItemsFromImages(
+    imagesBase64: string[],
+    referenceItems: ContractItemReference[] = [],
+  ): Promise<ExtractedItem[]> {
+    if (!this.model) throw new Error('Gemini not configured');
+    if (imagesBase64.length === 0) {
+      return [];
+    }
+    const prompt = IMAGE_EXTRACTION_PROMPT.replace(
+      '{REFERENCE_ITEMS_BLOCK}',
+      this.buildReferenceItemsBlock(referenceItems),
+    );
+
+    const imageParts: Part[] = imagesBase64.map((data) => ({
+      inlineData: {
+        mimeType: 'image/png',
+        data,
+      },
+    }));
+
+    const result = await this.callWithRetry(
+      () => this.model.generateContent([{ text: prompt }, ...imageParts]),
+      'extractItemsFromImages',
+    );
+    const text = result.response.text();
+
+    try {
+      return this.normalizeExtractedItems(this.parseJsonArray<any>(text));
+    } catch {
+      this.logger.error(
+        `Failed to parse Gemini image extraction response: ${text.substring(0, 200)}`,
+      );
+      throw new Error(
+        'Failed to parse image-based item extraction response from Gemini',
+      );
+    }
+  }
+
   async searchMarketPrices(
-    items: { itemName: string; unit: string | null }[],
+    items: MarketSearchItem[],
     region?: string | null,
   ): Promise<MarketPriceResult[]> {
     if (!this.searchModel) throw new Error('Gemini not configured');
@@ -172,14 +307,20 @@ export class GeminiService implements OnModuleInit {
   }
 
   private async searchMarketPricesBatch(
-    items: { itemName: string; unit: string | null }[],
+    items: MarketSearchItem[],
     region?: string | null,
   ): Promise<MarketPriceResult[]> {
     const itemsJson = JSON.stringify(
-      items.map((item) => ({
-        itemName: item.itemName,
-        unit: item.unit || 'шт',
-      })),
+      items.map((item) => {
+        const context = buildMarketSearchContext(item);
+        return {
+          itemName: context.itemName,
+          contractUnit: context.unit || 'шт',
+          contractUnitKind: context.contractUnitKind,
+          declaredPackSize: context.declaredPackSize,
+          packagingHint: context.packagingHint,
+        };
+      }),
     );
 
     const regionContext = region ? `в регіоні "${region}" ` : '';
@@ -187,8 +328,10 @@ export class GeminiService implements OnModuleInit {
       ? `, пріоритизуй ціни для регіону "${region}", але якщо регіональні дані відсутні — використовуй загальноукраїнські`
       : '';
 
-    const prompt = MARKET_PRICE_PROMPT
-      .replace('{REGION_CONTEXT}', regionContext)
+    const prompt = MARKET_PRICE_PROMPT.replace(
+      '{REGION_CONTEXT}',
+      regionContext,
+    )
       .replace('{REGION_SEARCH_HINT}', regionSearchHint)
       .replace('{ITEMS}', itemsJson);
     const result = await this.callWithRetry(
@@ -199,25 +342,48 @@ export class GeminiService implements OnModuleInit {
 
     try {
       const parsed = this.parseJsonArray<any>(text);
-      return parsed.map((item) => ({
-        itemName: typeof item.itemName === 'string' ? item.itemName : '',
-        marketPrice:
-          typeof item.marketPrice === 'number' && isFinite(item.marketPrice)
-            ? item.marketPrice
-            : null,
-        marketPriceMin:
-          typeof item.marketPriceMin === 'number' && isFinite(item.marketPriceMin)
-            ? item.marketPriceMin
-            : null,
-        marketPriceMax:
-          typeof item.marketPriceMax === 'number' && isFinite(item.marketPriceMax)
-            ? item.marketPriceMax
-            : null,
-        source:
-          typeof item.source === 'string' ? item.source : null,
-      }));
+      return items.map((inputItem, index) => {
+        const item = parsed[index] ?? {};
+        const result: MarketPriceResult = {
+          itemName:
+            typeof item.itemName === 'string'
+              ? item.itemName
+              : inputItem.itemName,
+          marketPrice:
+            typeof item.marketPrice === 'number' && isFinite(item.marketPrice)
+              ? item.marketPrice
+              : null,
+          marketPriceMin:
+            typeof item.marketPriceMin === 'number' &&
+            isFinite(item.marketPriceMin)
+              ? item.marketPriceMin
+              : null,
+          marketPriceMax:
+            typeof item.marketPriceMax === 'number' &&
+            isFinite(item.marketPriceMax)
+              ? item.marketPriceMax
+              : null,
+          source: typeof item.source === 'string' ? item.source : null,
+          pricingUnit:
+            typeof item.pricingUnit === 'string' ? item.pricingUnit : null,
+          unitsPerPackage:
+            typeof item.unitsPerPackage === 'number' &&
+            isFinite(item.unitsPerPackage) &&
+            item.unitsPerPackage > 1
+              ? item.unitsPerPackage
+              : null,
+          normalizedToContractUnit:
+            typeof item.normalizedToContractUnit === 'boolean'
+              ? item.normalizedToContractUnit
+              : null,
+        };
+
+        return normalizeMarketPriceResult(inputItem, result);
+      });
     } catch {
-      this.logger.error(`Failed to parse Gemini market price response: ${text.substring(0, 200)}`);
+      this.logger.error(
+        `Failed to parse Gemini market price response: ${text.substring(0, 200)}`,
+      );
       // Return empty results for this batch rather than failing entirely
       return items.map((item) => ({
         itemName: item.itemName,

@@ -13,6 +13,14 @@ const SECTION_END_PATTERNS = [
   /\n\s*(?:ЗАГАЛЬНА ВАРТІСТЬ|Загальна вартість|Разом|РАЗОМ|Всього|ВСЬОГО)\s*[:：]/,
 ];
 
+const TABLE_HEADER_PATTERNS = [
+  /найменування/i,
+  /(?:кількість|обсяг)/i,
+  /(?:ціна|вартість)/i,
+  /(?:одиниця|од\.?\s*виміру)/i,
+];
+const MAX_SCREENSHOT_PAGES = 8;
+
 @Injectable()
 export class PdfExtractorService {
   private readonly logger = new Logger(PdfExtractorService.name);
@@ -26,29 +34,31 @@ export class PdfExtractorService {
     return this.prozorroApi.getContractDocuments(contractId);
   }
 
-  selectBestDocument(documents: ProzorroDocument[]): ProzorroDocument | null {
+  rankDocuments(documents: ProzorroDocument[]): ProzorroDocument[] {
     const pdfs = documents.filter(
       (doc) => doc.format === 'application/pdf' || doc.url?.endsWith('.pdf'),
     );
 
-    if (pdfs.length === 0) return null;
+    if (pdfs.length === 0) return [];
 
-    // Prefer documents with "специфікація" or "договір" in title
-    const specDoc = pdfs.find((doc) =>
+    const specDocs = pdfs.filter((doc) =>
       doc.title?.toLowerCase().includes('специфікація'),
     );
-    if (specDoc) return specDoc;
-
-    const contractDoc = pdfs.find((doc) =>
-      doc.title?.toLowerCase().includes('договір'),
+    const contractDocs = pdfs.filter(
+      (doc) =>
+        !doc.title?.toLowerCase().includes('специфікація') &&
+        doc.title?.toLowerCase().includes('договір'),
     );
-    if (contractDoc) return contractDoc;
+    const rest = pdfs.filter(
+      (doc) =>
+        !doc.title?.toLowerCase().includes('специфікація') &&
+        !doc.title?.toLowerCase().includes('договір'),
+    );
 
-    // Fall back to the first PDF (usually the main document)
-    return pdfs[0];
+    return [...specDocs, ...contractDocs, ...rest];
   }
 
-  async downloadAndExtractPdf(documentUrl: string): Promise<string> {
+  async downloadPdf(documentUrl: string): Promise<Buffer> {
     const response = await firstValueFrom(
       this.httpService.get<ArrayBuffer>(documentUrl, {
         responseType: 'arraybuffer',
@@ -57,18 +67,92 @@ export class PdfExtractorService {
       }),
     );
 
-    const buffer = Buffer.from(response.data);
-    const parser = new PDFParse({ data: new Uint8Array(buffer) });
-    const result = await parser.getText();
-    return result.text;
+    return Buffer.from(response.data);
   }
 
-  extractSpecificationSection(fullText: string): string {
+  private async withParser<T>(
+    buffer: Buffer,
+    handler: (parser: PDFParse) => Promise<T>,
+  ): Promise<T> {
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+
+    try {
+      return await handler(parser);
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  async extractTextFromPdf(buffer: Buffer): Promise<string> {
+    return this.withParser(buffer, async (parser) => {
+      const result = await parser.getText({
+        pageJoiner: '\n',
+      });
+
+      return result.text?.trim() || '';
+    });
+  }
+
+  async renderPdfScreenshots(buffer: Buffer): Promise<string[]> {
+    return this.withParser(buffer, async (parser) => {
+      const result = await parser.getScreenshot({
+        last: MAX_SCREENSHOT_PAGES,
+        desiredWidth: 1600,
+        imageDataUrl: false,
+        imageBuffer: true,
+      });
+
+      return result.pages
+        .map((page) => Buffer.from(page.data).toString('base64'))
+        .filter((image) => image.length > 0);
+    });
+  }
+
+  private trimSection(textAfterStart: string): string {
+    let endIndex = textAfterStart.length;
+    for (const pattern of SECTION_END_PATTERNS) {
+      const match = textAfterStart.substring(100).search(pattern);
+      if (match !== -1 && match + 100 < endIndex) {
+        endIndex = match + 100;
+      }
+    }
+
+    return textAfterStart.substring(0, endIndex);
+  }
+
+  private findTableSection(fullText: string): string | null {
+    const lines = fullText.split(/\r?\n/);
+
+    // Scan from the end — price tables are usually near the end of the document
+    let lastMatch: string | null = null;
+    for (let i = 0; i < lines.length; i++) {
+      const windowText = lines.slice(i, i + 20).join('\n');
+      const matchedHeaders = TABLE_HEADER_PATTERNS.filter((pattern) =>
+        pattern.test(windowText),
+      ).length;
+
+      if (matchedHeaders >= 2) {
+        const candidateSection = lines.slice(i, i + 250).join('\n');
+        lastMatch = this.trimSection(candidateSection);
+        i += 20; // skip ahead to avoid re-matching the same table header
+      }
+    }
+
+    return lastMatch;
+  }
+
+  extractSpecificationSection(fullText: string): string | null {
     // Find "Специфікація" in various forms
     const specPatterns = [
       /специфікація/i,
       /с\s*п\s*е\s*ц\s*и\s*ф\s*і\s*к\s*а\s*ц\s*і\s*я/i, // Spaced out letters
       /додаток.*специфікація/i,
+      /спецификация/i,          // Russian
+      /специфік/i,              // Ukrainian prefix / truncated
+      /таблиця\s*позицій/i,
+      /перелік\s*товарів/i,
+      /кошторис/i,
+      /номенклатура/i,
     ];
 
     let specIndex = -1;
@@ -81,23 +165,17 @@ export class PdfExtractorService {
     }
 
     if (specIndex === -1) {
-      // No specification section found — return full text (LLM will handle it)
-      this.logger.warn('Specification section not found in PDF, using full text');
-      return fullText;
+      const tableSection = this.findTableSection(fullText);
+      if (tableSection) {
+        this.logger.warn('Specification section not found in PDF, using detected pricing table');
+        return tableSection;
+      }
+
+      this.logger.warn('Specification section not found in PDF, and no pricing table detected');
+      return null;
     }
 
     const textAfterSpec = fullText.substring(specIndex);
-
-    // Find end of specification section
-    let endIndex = textAfterSpec.length;
-    for (const pattern of SECTION_END_PATTERNS) {
-      // Skip the first match if it's right at the beginning (it might be the spec header itself)
-      const match = textAfterSpec.substring(100).search(pattern);
-      if (match !== -1 && match + 100 < endIndex) {
-        endIndex = match + 100;
-      }
-    }
-
-    return textAfterSpec.substring(0, endIndex);
+    return this.trimSection(textAfterSpec);
   }
 }
