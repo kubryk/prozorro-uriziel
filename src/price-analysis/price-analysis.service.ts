@@ -149,6 +149,12 @@ export class PriceAnalysisService {
     chatId: string,
     messageId?: number,
   ): Promise<TriggerTenderAnalysisResult> {
+    if (!this.gemini.isAvailable) {
+      throw new Error(
+        'Gemini API не налаштований — аналіз цін неможливий (перевірте GEMINI_API_KEY)',
+      );
+    }
+
     const contracts = await this.prisma.contract.findMany({
       where: { tenderId },
       select: {
@@ -399,94 +405,100 @@ export class PriceAnalysisService {
 
       let extractedItems: ExtractedItem[] = [];
       let succeededDoc: ProzorroDocument | null = null;
+      let lastDocumentError: string | null = null;
+
+      await this.updateStatus(analysisId, 'EXTRACTING_ITEMS');
 
       for (const doc of rankedDocs) {
-        if (!doc.url) continue;
-        this.logger.log(
-          `Analysis ${analysisId}: trying document "${doc.title ?? 'no title'}"`,
-        );
-
-        let pdfBuffer: Buffer;
-        try {
-          pdfBuffer = await this.pdfExtractor.downloadPdf(doc.url);
-        } catch {
+        if (!doc.url) {
           this.logger.warn(
-            `Analysis ${analysisId}: download failed for "${doc.title}", skipping`,
+            `Analysis ${analysisId}: document "${doc.title ?? 'no title'}" has no URL, skipping`,
           );
           continue;
         }
 
-        // Text extraction
-        const fullText = await this.pdfExtractor.extractTextFromPdf(pdfBuffer);
-        let specText =
-          fullText && fullText.trim().length >= 50
-            ? this.pdfExtractor.extractSpecificationSection(fullText)
-            : null;
-
-        // Mistral OCR fallback (scanned PDF)
-        if (
-          (!specText || specText.trim().length < 50) &&
-          this.mistralOcr.isAvailable
-        ) {
+        try {
           this.logger.log(
-            `Analysis ${analysisId}: trying Mistral OCR for "${doc.title}"`,
+            `Analysis ${analysisId}: trying document "${doc.title ?? 'no title'}"`,
           );
-          const ocrText = await this.mistralOcr.extractTextFromPdf(pdfBuffer);
-          if (ocrText && ocrText.trim().length >= 50) {
-            specText =
-              this.pdfExtractor.extractSpecificationSection(ocrText) ?? ocrText;
+
+          const pdfBuffer = await this.pdfExtractor.downloadPdf(doc.url);
+
+          // Text extraction
+          const fullText =
+            await this.pdfExtractor.extractTextFromPdf(pdfBuffer);
+
+          // Find spec section; fall back to last 12 000 chars if not found
+          let effectiveText: string | null = null;
+          if (fullText.trim().length >= 50) {
+            effectiveText =
+              this.pdfExtractor.extractSpecificationSection(fullText) ?? null;
+            if (!effectiveText || effectiveText.trim().length < 50) {
+              this.logger.warn(
+                `Analysis ${analysisId}: spec section not found in "${doc.title}", using full-text fallback`,
+              );
+              effectiveText =
+                fullText.length > 12000 ? fullText.slice(-12000) : fullText;
+            }
           }
-        }
 
-        // Full-text fallback: spec section not found but document has text
-        let effectiveText = specText;
-        if (
-          (!effectiveText || effectiveText.trim().length < 50) &&
-          fullText.length >= 200
-        ) {
-          this.logger.warn(
-            `Analysis ${analysisId}: spec section not found in "${doc.title}", using full-text fallback`,
-          );
-          // Prices are usually at the end — take the last portion of the text
-          effectiveText =
-            fullText.length > 12000 ? fullText.slice(-12000) : fullText;
-        }
+          // Step 2: Extract items via Gemini (text path)
+          let docItems: ExtractedItem[] =
+            effectiveText && effectiveText.trim().length >= 50
+              ? await this.gemini.extractItemsFromText(
+                  effectiveText,
+                  contractItemReferences,
+                )
+              : [];
 
-        // Step 2: Extract items via Gemini
-        await this.updateStatus(analysisId, 'EXTRACTING_ITEMS');
-
-        let docItems: ExtractedItem[] =
-          effectiveText && effectiveText.trim().length >= 50
-            ? await this.gemini.extractItemsFromText(
-                effectiveText,
+          // Mistral OCR: if Gemini found nothing, try OCR and pass result to Gemini again
+          if (docItems.length === 0 && this.mistralOcr.isAvailable) {
+            this.logger.log(
+              `Analysis ${analysisId}: Gemini found 0 items, trying Mistral OCR for "${doc.title}"`,
+            );
+            const ocrText = await this.mistralOcr.extractTextFromPdf(pdfBuffer);
+            if (ocrText && ocrText.trim().length >= 50) {
+              let ocrEffective =
+                this.pdfExtractor.extractSpecificationSection(ocrText);
+              if (!ocrEffective || ocrEffective.trim().length < 50) {
+                ocrEffective =
+                  ocrText.length > 12000 ? ocrText.slice(-12000) : ocrText;
+              }
+              docItems = await this.gemini.extractItemsFromText(
+                ocrEffective,
                 contractItemReferences,
-              )
-            : [];
+              );
+            }
+          }
 
-        if (docItems.length === 0) {
-          const screenshots =
-            await this.pdfExtractor.renderPdfScreenshots(pdfBuffer);
-          docItems = await this.gemini.extractItemsFromImages(
-            screenshots,
-            contractItemReferences,
+          if (docItems.length > 0) {
+            extractedItems = docItems;
+            succeededDoc = doc;
+            this.logger.log(
+              `Analysis ${analysisId}: extracted ${docItems.length} items from "${doc.title}"`,
+            );
+            break;
+          }
+
+          this.logger.warn(
+            `Analysis ${analysisId}: 0 items from "${doc.title}", trying next PDF`,
           );
-        }
-
-        if (docItems.length > 0) {
-          extractedItems = docItems;
-          succeededDoc = doc;
-          this.logger.log(
-            `Analysis ${analysisId}: extracted ${docItems.length} items from "${doc.title}"`,
+        } catch (error: unknown) {
+          lastDocumentError =
+            error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            `Analysis ${analysisId}: failed to process "${doc.title ?? 'no title'}": ${lastDocumentError}`,
           );
-          break;
+          continue;
         }
-
-        this.logger.warn(
-          `Analysis ${analysisId}: 0 items from "${doc.title}", trying next PDF`,
-        );
       }
 
       if (!succeededDoc) {
+        if (lastDocumentError) {
+          this.logger.warn(
+            `Analysis ${analysisId}: all ranked PDFs failed or produced 0 items; last document error: ${lastDocumentError}`,
+          );
+        }
         await this.failAnalysis(
           analysisId,
           'Не вдалося витягти товари/ціни з жодного PDF',
@@ -503,17 +515,15 @@ export class PriceAnalysisService {
       });
 
       // Save extracted items
-      for (const item of extractedItems) {
-        await this.prisma.priceAnalysisItem.create({
-          data: {
-            analysisId,
-            itemName: item.itemName,
-            unitPrice: item.unitPrice,
-            quantity: item.quantity,
-            unit: item.unit,
-          },
-        });
-      }
+      await this.prisma.priceAnalysisItem.createMany({
+        data: extractedItems.map((item) => ({
+          analysisId,
+          itemName: item.itemName,
+          unitPrice: item.unitPrice,
+          quantity: item.quantity,
+          unit: item.unit,
+        })),
+      });
 
       // Step 3: Search market prices
       // TODO: re-enable when item extraction is verified

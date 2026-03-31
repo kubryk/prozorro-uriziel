@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -12,7 +17,10 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
   private isSyncing = false;
   private addedCount = 0;
   private statsInterval: ReturnType<typeof setInterval>;
+  private hasLoggedQueueDisableNotice = false;
   private readonly incompleteSyncStatuses = ['PARTIAL', 'FAILED'] as const;
+  private readonly tenderQueueEnqueueEnabled =
+    process.env.TENDER_QUEUE_ENQUEUE_ENABLED === 'true';
   private readonly mainQueueFailedJobsToKeep = (() => {
     const parsed = Number.parseInt(
       process.env.MAIN_QUEUE_FAILED_JOBS_TO_KEEP || '1000',
@@ -60,7 +68,9 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
           `📥 За 30с: додано ${this.addedCount} тендерів у чергу | Черга: ${counts.waiting} очікують, ${counts.active} активних, ${counts.failed} історичних failed jobs | БД: ${incompleteTendersCount} незавершених тендерів`,
         );
         this.addedCount = 0;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }, 30_000);
   }
 
@@ -70,6 +80,21 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
 
   onModuleDestroy() {
     clearInterval(this.statsInterval);
+  }
+
+  private shouldSkipTenderEnqueue(): boolean {
+    if (this.tenderQueueEnqueueEnabled) {
+      return false;
+    }
+
+    if (!this.hasLoggedQueueDisableNotice) {
+      this.logger.warn(
+        'TENDER_QUEUE_ENQUEUE_ENABLED is not true, skipping enqueue of new tender jobs.',
+      );
+      this.hasLoggedQueueDisableNotice = true;
+    }
+
+    return true;
   }
 
   private buildMainJobId(tender: {
@@ -84,7 +109,9 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
         : typeof tender.dateModified === 'string'
           ? tender.dateModified
           : '';
-    const parsedDateModified = rawDateModified ? new Date(rawDateModified) : null;
+    const parsedDateModified = rawDateModified
+      ? new Date(rawDateModified)
+      : null;
 
     if (parsedDateModified && !Number.isNaN(parsedDateModified.getTime())) {
       return `main-${tender.id}-${parsedDateModified.getTime()}`;
@@ -158,6 +185,7 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
   async handleSync() {
     // If this instance is only a worker, do not fetch new pages
     if (process.env.APP_ROLE === 'WORKER') return;
+    if (this.shouldSkipTenderEnqueue()) return;
 
     if (this.isSyncing) return;
     this.isSyncing = true;
@@ -220,15 +248,17 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
         currentOffset = nextPageOffset;
         if (currentOffset) {
           const updated = await this.prisma.syncState.updateMany({
-            where: { id: 1, lastOffset: syncState!.lastOffset },
+            where: { id: 1, lastOffset: syncState.lastOffset },
             data: { lastOffset: currentOffset },
           });
           if (updated.count === 0) {
-            this.logger.warn('Sync state was modified by another instance, skipping this run');
+            this.logger.warn(
+              'Sync state was modified by another instance, skipping this run',
+            );
             break;
           }
           // Update in-memory state without an extra DB round-trip
-          syncState = { ...syncState!, lastOffset: currentOffset };
+          syncState = { ...syncState, lastOffset: currentOffset };
         }
 
         pagesProcessed++;
@@ -248,6 +278,7 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
   @Cron('*/10 * * * *')
   async retryPartialTenders() {
     if (process.env.APP_ROLE === 'WORKER') return;
+    if (this.shouldSkipTenderEnqueue()) return;
 
     this.logger.log('Checking for incomplete tenders to retry...');
     try {
@@ -275,7 +306,7 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
         // Processor will set FULL on success or PARTIAL/FAILED on error.
         await this.prisma.tender.update({
           where: { id: tender.id },
-          data: { syncStatus: 'RETRYING' }
+          data: { syncStatus: 'RETRYING' },
         });
       }
     } catch (error: unknown) {

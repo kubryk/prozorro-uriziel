@@ -29,13 +29,17 @@ describe('SyncService', () => {
 
   beforeEach(() => {
     statsIntervalHandler = undefined;
-    jest.spyOn(global, 'setInterval').mockImplementation((handler: TimerHandler) => {
-      statsIntervalHandler = handler as () => Promise<void> | void;
-      return 0 as any;
-    });
+    jest
+      .spyOn(global, 'setInterval')
+      .mockImplementation((handler: TimerHandler) => {
+        statsIntervalHandler = handler as () => Promise<void> | void;
+        return 0 as any;
+      });
     jest.spyOn(Logger.prototype, 'log').mockImplementation();
     jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     delete process.env.APP_ROLE;
+    process.env.TENDER_QUEUE_ENQUEUE_ENABLED = 'true';
 
     prisma = {
       syncState: {
@@ -76,6 +80,7 @@ describe('SyncService', () => {
   afterEach(() => {
     jest.restoreAllMocks();
     delete process.env.APP_ROLE;
+    delete process.env.TENDER_QUEUE_ENQUEUE_ENABLED;
   });
 
   it('ставить versioned main jobs, щоб нові апдейти тендера не блокувались старим failed jobId', async () => {
@@ -148,6 +153,24 @@ describe('SyncService', () => {
         },
       },
     ]);
+  });
+
+  it('тимчасово не додає нові тендери у чергу, якщо enqueue вимкнений', async () => {
+    process.env.TENDER_QUEUE_ENQUEUE_ENABLED = 'false';
+    service = new SyncService(
+      prisma as any,
+      prozorroApi as any,
+      tenderQueue as any,
+    );
+
+    await service.handleSync();
+
+    expect(prozorroApi.getTendersPage).not.toHaveBeenCalled();
+    expect(tenderQueue.addBulk).not.toHaveBeenCalled();
+    expect(prisma.syncState.findUnique).not.toHaveBeenCalled();
+    expect(Logger.prototype.warn).toHaveBeenCalledWith(
+      'TENDER_QUEUE_ENQUEUE_ENABLED is not true, skipping enqueue of new tender jobs.',
+    );
   });
 
   it('не логує лише історичні failed jobs як активні помилки, якщо живої роботи вже немає', async () => {
@@ -238,6 +261,22 @@ describe('SyncService', () => {
       where: { id: 'tender-failed' },
       data: { syncStatus: 'RETRYING' },
     });
+  });
+
+  it('не ставить retry jobs, якщо enqueue тендерів вимкнений', async () => {
+    process.env.TENDER_QUEUE_ENQUEUE_ENABLED = 'false';
+    service = new SyncService(
+      prisma as any,
+      prozorroApi as any,
+      tenderQueue as any,
+    );
+
+    await service.retryPartialTenders();
+
+    expect(prisma.tender.findMany).not.toHaveBeenCalled();
+    expect(tenderQueue.getJob).not.toHaveBeenCalled();
+    expect(tenderQueue.add).not.toHaveBeenCalled();
+    expect(prisma.tender.update).not.toHaveBeenCalled();
   });
 
   it('реанімує існуючий failed retry job замість створення дубля з тим самим jobId', async () => {

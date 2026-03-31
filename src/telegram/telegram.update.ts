@@ -21,6 +21,7 @@ interface SearchSession {
   year?: number | null;
   status?: string | null;
   minPrice?: number;
+  stepMessageIds: number[];
 }
 
 interface SearchRequestParams {
@@ -65,7 +66,9 @@ export class TelegramUpdate {
     private readonly telegramService: TelegramService,
   ) {}
 
-  private buildProzorroContractUrl(contractPublicId?: string | null): string | null {
+  private buildProzorroContractUrl(
+    contractPublicId?: string | null,
+  ): string | null {
     if (!contractPublicId) {
       return null;
     }
@@ -90,9 +93,7 @@ export class TelegramUpdate {
     return this.telegramService.escapeHtml(this.truncateText(normalized, 100));
   }
 
-  private joinMessageLines(
-    lines: Array<string | null | undefined>,
-  ): string {
+  private joinMessageLines(lines: Array<string | null | undefined>): string {
     return lines
       .filter((line): line is string => line !== null && line !== undefined)
       .join('\n');
@@ -173,7 +174,9 @@ export class TelegramUpdate {
     });
 
     if (entries.length > preview.length) {
-      preview.push(`• Ще ${entries.length - preview.length} контракт(ів) у списку`);
+      preview.push(
+        `• Ще ${entries.length - preview.length} контракт(ів) у списку`,
+      );
     }
 
     return preview.join('\n');
@@ -209,7 +212,9 @@ export class TelegramUpdate {
     });
 
     if (analyses.length > preview.length) {
-      preview.push(`• Ще ${analyses.length - preview.length} контракт(ів) у списку`);
+      preview.push(
+        `• Ще ${analyses.length - preview.length} контракт(ів) у списку`,
+      );
     }
 
     return preview.join('\n');
@@ -260,13 +265,8 @@ export class TelegramUpdate {
     contractsText?: string;
     viewUrl: string;
   }): string {
-    const {
-      tenderLabel,
-      tenderTitle,
-      tenderUrl,
-      contractsText,
-      viewUrl,
-    } = params;
+    const { tenderLabel, tenderTitle, tenderUrl, contractsText, viewUrl } =
+      params;
     const tenderLabelHtml = this.telegramService.escapeHtml(tenderLabel);
     const renderedTenderLabel = tenderUrl
       ? `<a href="${tenderUrl}">${tenderLabelHtml}</a>`
@@ -392,8 +392,9 @@ export class TelegramUpdate {
     const chatId = ctx.chat?.id;
     if (!chatId) return;
 
-    searchSessions.set(chatId, { step: 'edrpou' });
-    await ctx.reply('🔍 Введіть ЄДРПОУ компанії (8 або 10 цифр):');
+    searchSessions.set(chatId, { step: 'edrpou', stepMessageIds: [] });
+    const msg = await ctx.reply('🔍 Введіть ЄДРПОУ компанії (8 або 10 цифр):');
+    searchSessions.get(chatId)!.stepMessageIds.push(msg.message_id);
   }
 
   @Command('tender')
@@ -450,7 +451,7 @@ export class TelegramUpdate {
         }
         session.edrpou = text;
         session.step = 'role';
-        await ctx.reply(
+        const roleMsg = await ctx.reply(
           'Оберіть роль компанії:',
           Markup.inlineKeyboard([
             [
@@ -460,6 +461,7 @@ export class TelegramUpdate {
             [Markup.button.callback('📋 Обидва', 'role:both')],
           ]),
         );
+        session.stepMessageIds.push(roleMsg.message_id);
         break;
       }
 
@@ -470,6 +472,7 @@ export class TelegramUpdate {
           return;
         }
         session.minPrice = price;
+        const stepMessageIds = [...session.stepMessageIds];
         searchSessions.delete(chatId);
         await this.executeSearch(
           ctx,
@@ -480,6 +483,7 @@ export class TelegramUpdate {
             >
           > &
             SearchSession,
+          stepMessageIds,
         );
         break;
       }
@@ -500,7 +504,7 @@ export class TelegramUpdate {
     session.step = 'year';
 
     await ctx.answerCbQuery();
-    await ctx.reply(
+    const yearMsg = await ctx.reply(
       'Оберіть рік:',
       Markup.inlineKeyboard([
         [
@@ -510,6 +514,7 @@ export class TelegramUpdate {
         [Markup.button.callback('Обидва роки', 'year:both')],
       ]),
     );
+    session.stepMessageIds.push(yearMsg.message_id);
   }
 
   @Action(/^year:(.+)$/)
@@ -526,7 +531,7 @@ export class TelegramUpdate {
     session.step = 'status';
 
     await ctx.answerCbQuery();
-    await ctx.reply(
+    const statusMsg = await ctx.reply(
       'Оберіть статус тендеру:',
       Markup.inlineKeyboard([
         [
@@ -539,6 +544,7 @@ export class TelegramUpdate {
         ],
       ]),
     );
+    session.stepMessageIds.push(statusMsg.message_id);
   }
 
   @Action(/^status:(.+)$/)
@@ -555,7 +561,10 @@ export class TelegramUpdate {
     session.step = 'minPrice';
 
     await ctx.answerCbQuery();
-    await ctx.reply('💰 Введіть мінімальну суму контракту (0 = без обмежень):');
+    const priceMsg = await ctx.reply(
+      '💰 Введіть мінімальну суму контракту (0 = без обмежень):',
+    );
+    session.stepMessageIds.push(priceMsg.message_id);
   }
 
   @Action(/^page:(.+):(\d+)$/)
@@ -573,6 +582,7 @@ export class TelegramUpdate {
     }
 
     await ctx.answerCbQuery();
+    await ctx.deleteMessage().catch(() => null);
     await this.showSearchPage(ctx, cached, page, searchKey);
   }
 
@@ -637,12 +647,7 @@ export class TelegramUpdate {
 
     // Start polling for completion
     if (result.analysisIds.length > 0) {
-      this.pollForCompletion(
-        ctx,
-        tenderId,
-        chatId,
-        statusMsg.message_id,
-      );
+      this.pollForCompletion(ctx, tenderId, chatId, statusMsg.message_id);
     }
   }
 
@@ -698,7 +703,16 @@ export class TelegramUpdate {
     }
   }
 
-  private async executeSearch(ctx: Context, params: SearchRequestParams) {
+  private async executeSearch(
+    ctx: Context,
+    params: SearchRequestParams,
+    stepMessageIds: number[] = [],
+  ) {
+    // Delete all step messages before showing results
+    await Promise.all(
+      stepMessageIds.map((id) => ctx.deleteMessage(id).catch(() => null)),
+    );
+
     await ctx.reply('🔍 Шукаю тендери...');
 
     try {
@@ -739,7 +753,7 @@ export class TelegramUpdate {
       await ctx.reply(
         `🔎 <b>${result.total}</b> тендерів\n` +
           `📄 <b>${result.relatedContractTotal}</b> контрактів\n` +
-          `Фільтри: ${roleLabel}, ${params.year || 'всі роки'}, ${statusLabel}, від ${this.telegramService.formatAmount(params.minPrice)}`,
+          `Фільтри: <code>${params.edrpou}</code>, ${roleLabel}, ${params.year || 'всі роки'}, ${statusLabel}, від ${this.telegramService.formatAmount(params.minPrice)}`,
         { parse_mode: 'HTML' },
       );
 
@@ -784,10 +798,11 @@ export class TelegramUpdate {
       `\n\nСторінка ${page + 1}/${totalPages} (${cache.total} тендерів, ${cache.relatedContractTotal} контрактів)`;
 
     const keyboard = this.telegramService.buildSearchResultsKeyboard(
-      tenders as any[],
+      tenders,
       page,
       totalPages,
       searchKey,
+      start,
     );
 
     await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
@@ -872,9 +887,8 @@ export class TelegramUpdate {
           ).replace(/\/$/, '');
           const viewUrl = `${appUrl}/price-analysis/view/${tenderId}`;
 
-          const contractsText = this.formatCompletedTenderAnalysisContracts(
-            allDone,
-          );
+          const contractsText =
+            this.formatCompletedTenderAnalysisContracts(allDone);
 
           const completionMessage = this.buildTenderAnalysisCompletionMessage({
             tenderLabel,
@@ -883,6 +897,15 @@ export class TelegramUpdate {
             contractsText: contractsText.length > 0 ? contractsText : undefined,
             viewUrl,
           });
+
+          const reanalyzeKeyboard = Markup.inlineKeyboard([
+            [
+              Markup.button.callback(
+                '🔄 Аналізувати знову',
+                `analyze:${tenderId}`,
+              ),
+            ],
+          ]);
 
           if (messageId != null) {
             await ctx.telegram.editMessageText(
@@ -893,22 +916,14 @@ export class TelegramUpdate {
               {
                 parse_mode: 'HTML',
                 link_preview_options: { is_disabled: true },
-              },
-            );
-
-            await ctx.telegram.sendMessage(
-              chatId,
-              '✅ Готово',
-              {
-                parse_mode: 'HTML',
-                reply_parameters: { message_id: messageId },
-                link_preview_options: { is_disabled: true },
+                ...reanalyzeKeyboard,
               },
             );
           } else {
             await ctx.telegram.sendMessage(chatId, completionMessage, {
               parse_mode: 'HTML',
               link_preview_options: { is_disabled: true },
+              ...reanalyzeKeyboard,
             });
           }
         }

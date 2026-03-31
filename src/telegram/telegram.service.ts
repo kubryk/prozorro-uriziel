@@ -198,16 +198,16 @@ export class TelegramService {
     currentPage: number,
     totalPages: number,
     searchKey: string,
+    pageOffset: number = 0,
   ) {
     const buttons: any[][] = [];
 
     // Analysis buttons for each tender on this page
-    for (const tender of tenders) {
+    for (let i = 0; i < tenders.length; i++) {
+      const tender = tenders[i];
+      const num = pageOffset + i + 1;
       buttons.push([
-        Markup.button.callback(
-          `🔍 Аналіз ${tender.tenderID || tender.id}`,
-          `analyze:${tender.id}`,
-        ),
+        Markup.button.callback(`🔍 №${num} Аналіз`, `analyze:${tender.id}`),
       ]);
     }
 

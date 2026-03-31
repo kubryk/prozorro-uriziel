@@ -34,4 +34,63 @@ describe('PdfExtractorService', () => {
 
     expect(result).toBeNull();
   });
+
+  it('ігнорує згадку специфікації у змісті та бере реальну таблицю нижче', () => {
+    const text = `
+ЗМІСТ
+1. Вступ
+2. Специфікація ........ 15
+3. Інше
+
+${'А'.repeat(180)}
+
+Додаток 1. Специфікація
+Найменування товару    Кількість    Одиниця виміру    Ціна
+Шприц одноразовий      100          шт                12.50
+
+3. Умови оплати
+`;
+
+    const result = service.extractSpecificationSection(text);
+
+    expect(result).toContain('Шприц одноразовий');
+    expect(result).not.toContain('Специфікація ........ 15');
+  });
+
+  it('розпізнає PDF за mime, url з query та назвою файлу', () => {
+    const ranked = service.rankDocuments([
+      {
+        id: 'spec',
+        title: 'Специфікація',
+        url: 'https://example.com/download?id=1',
+        format: 'APPLICATION/PDF',
+      },
+      {
+        id: 'contract',
+        title: 'Договір.PDF',
+        url: 'https://example.com/file?id=2',
+      },
+      {
+        id: 'appendix',
+        title: 'Додаток',
+        url: 'https://example.com/files/spec.pdf?signature=abc',
+      },
+      {
+        id: 'image',
+        title: 'scan.jpg',
+        url: 'https://example.com/files/scan.jpg',
+        format: 'image/jpeg',
+      },
+      {
+        id: 'missing-url',
+        title: 'spec.pdf',
+      },
+    ] as any);
+
+    expect(ranked.map((doc) => doc.id)).toEqual([
+      'spec',
+      'contract',
+      'appendix',
+    ]);
+  });
 });

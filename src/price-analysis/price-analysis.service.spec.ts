@@ -7,6 +7,8 @@ import { PriceAnalysisService } from './price-analysis.service';
 describe('PriceAnalysisService', () => {
   let prisma: any;
   let pdfExtractor: any;
+  let gemini: any;
+  let mistralOcr: any;
   let analysisQueue: any;
   let service: PriceAnalysisService;
 
@@ -20,14 +22,32 @@ describe('PriceAnalysisService', () => {
       },
       priceAnalysis: {
         findFirst: jest.fn(),
+        findUnique: jest.fn(),
         deleteMany: jest.fn(),
         create: jest.fn(),
+        update: jest.fn(),
+      },
+      priceAnalysisItem: {
+        createMany: jest.fn(),
       },
     };
 
     pdfExtractor = {
       fetchContractDocuments: jest.fn(),
       rankDocuments: jest.fn(),
+      downloadPdf: jest.fn(),
+      extractTextFromPdf: jest.fn(),
+      extractSpecificationSection: jest.fn(),
+    };
+
+    gemini = {
+      isAvailable: true,
+      extractItemsFromText: jest.fn(),
+    };
+
+    mistralOcr = {
+      isAvailable: false,
+      extractTextFromPdf: jest.fn(),
     };
 
     analysisQueue = {
@@ -37,12 +57,14 @@ describe('PriceAnalysisService', () => {
     service = new PriceAnalysisService(
       prisma,
       pdfExtractor,
-      {} as any,
-      { isAvailable: false } as any,
+      gemini,
+      mistralOcr,
       analysisQueue,
     );
 
     prisma.tender.findUnique.mockResolvedValue({ status: 'complete' });
+    prisma.priceAnalysis.update.mockResolvedValue({});
+    prisma.priceAnalysisItem.createMany.mockResolvedValue({ count: 1 });
   });
 
   it('не створює analysis job, якщо в контракту немає PDF-документів', async () => {
@@ -262,5 +284,84 @@ describe('PriceAnalysisService', () => {
     expect(pdfExtractor.fetchContractDocuments).not.toHaveBeenCalled();
     expect(prisma.priceAnalysis.create).not.toHaveBeenCalled();
     expect(analysisQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('переходить до наступного PDF, якщо попередній падає на етапі витягування', async () => {
+    prisma.priceAnalysis.findUnique.mockResolvedValue({
+      id: 'analysis-1',
+      contractId: 'contract-1',
+      contract: {
+        items: [],
+        tender: { customerRegion: 'Kyiv' },
+      },
+    });
+
+    const documents = [
+      { id: 'doc-1', title: 'Broken spec', url: 'https://example.com/bad.pdf' },
+      { id: 'doc-2', title: 'Good spec', url: 'https://example.com/good.pdf' },
+    ];
+
+    pdfExtractor.fetchContractDocuments.mockResolvedValue(documents);
+    pdfExtractor.rankDocuments.mockReturnValue(documents);
+    pdfExtractor.downloadPdf
+      .mockResolvedValueOnce(Buffer.from('bad-pdf'))
+      .mockResolvedValueOnce(Buffer.from('good-pdf'));
+    pdfExtractor.extractTextFromPdf
+      .mockResolvedValueOnce(
+        'Додаток 1. Специфікація\nНайменування товару Кількість Одиниця виміру Ціна\nШприц 100 шт 12.50',
+      )
+      .mockResolvedValueOnce(
+        'Додаток 2. Специфікація\nНайменування товару Кількість Одиниця виміру Ціна\nШприц 100 шт 12.50',
+      );
+    pdfExtractor.extractSpecificationSection.mockReturnValue(
+      'Найменування товару Кількість Одиниця виміру Ціна\nШприц 100 шт 12.50',
+    );
+    gemini.extractItemsFromText
+      .mockRejectedValueOnce(new Error('Gemini returned malformed JSON'))
+      .mockResolvedValueOnce([
+        {
+          itemName: 'Шприц одноразовий',
+          unitPrice: 12.5,
+          quantity: 100,
+          unit: 'шт',
+        },
+      ]);
+
+    await expect(
+      service.runAnalysisPipeline('analysis-1'),
+    ).resolves.toBeUndefined();
+
+    expect(gemini.extractItemsFromText).toHaveBeenCalledTimes(2);
+    expect(prisma.priceAnalysisItem.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          analysisId: 'analysis-1',
+          itemName: 'Шприц одноразовий',
+          unitPrice: 12.5,
+          quantity: 100,
+          unit: 'шт',
+        },
+      ],
+    });
+
+    const updateCalls = prisma.priceAnalysis.update.mock.calls.map(
+      ([payload]: [any]) => payload,
+    );
+    expect(updateCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            sourceDocumentTitle: 'Good spec',
+            sourceDocumentUrl: 'https://example.com/good.pdf',
+          }),
+        }),
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'COMPLETE',
+            totalItems: 1,
+          }),
+        }),
+      ]),
+    );
   });
 });

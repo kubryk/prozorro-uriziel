@@ -1,9 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import {
-  GoogleGenerativeAI,
-  GenerativeModel,
-  type Part,
-} from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import {
   ContractItemReference,
   ExtractedItem,
@@ -41,28 +37,6 @@ Return ONLY the JSON array, no other text.
 Text:
 `;
 
-const IMAGE_EXTRACTION_PROMPT = `You are analyzing page images from a Ukrainian public procurement contract specification.
-Extract all line items with explicit per-unit prices visible in the images.
-
-Return a JSON array where each element has:
-- "itemName": string
-- "unitPrice": number
-- "quantity": number or null
-- "unit": string or null
-
-Rules:
-- Only include rows where a specific item name and a specific per-unit price are visible.
-- Do NOT use the general subject or title of the contract as an item.
-- Do NOT treat the total contract amount as a unit price.
-- If the images do not contain a clear specification or a line-item table with explicit pricing, return an empty JSON array.
-- Preserve the most specific wording visible in the document row.
-- Preserve brands, trade names, manufacturers, model codes, article numbers, dosage, and package markers like "№30" whenever they are visible in the PDF image.
-- Use official contract items from Prozorro only as weak validation or to restore a clearly unreadable fragment.
-- Never replace a more detailed PDF item name with a shorter or more generic official item name from Prozorro.
-- Do not invent rows that are absent from the visible specification.
-{REFERENCE_ITEMS_BLOCK}
-- Return ONLY the JSON array, no other text.`;
-
 const MARKET_PRICE_PROMPT = `For each of the following items from a Ukrainian public procurement contract,
 find the current average market price {REGION_CONTEXT}(in UAH per contract unit).
 
@@ -95,12 +69,17 @@ Return ONLY the JSON array, no other text.`;
 const ITEMS_PER_BATCH = 10;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 2_000;
+const MAX_INPUT_TEXT_LENGTH = 30_000;
 
 @Injectable()
 export class GeminiService implements OnModuleInit {
   private readonly logger = new Logger(GeminiService.name);
   private model: GenerativeModel;
   private searchModel: GenerativeModel;
+
+  get isAvailable(): boolean {
+    return !!this.model;
+  }
 
   private async callWithRetry<T>(
     fn: () => Promise<T>,
@@ -112,7 +91,6 @@ export class GeminiService implements OnModuleInit {
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         const isRetryable =
-          msg.includes('API_KEY_INVALID') ||
           msg.includes('429') ||
           msg.includes('503') ||
           msg.includes('RESOURCE_EXHAUSTED');
@@ -134,7 +112,11 @@ export class GeminiService implements OnModuleInit {
     const fencedMatch = trimmedText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
     const candidate = fencedMatch?.[1]?.trim() || trimmedText;
 
-    return JSON.parse(candidate) as T[];
+    const parsed: unknown = JSON.parse(candidate);
+    if (!Array.isArray(parsed)) {
+      throw new Error(`Expected JSON array but got ${typeof parsed}`);
+    }
+    return parsed as T[];
   }
 
   private normalizeExtractedItems(items: any[]): ExtractedItem[] {
@@ -234,8 +216,13 @@ export class GeminiService implements OnModuleInit {
       this.buildReferenceItemsBlock(referenceItems),
     );
 
+    const truncatedText =
+      specificationText.length > MAX_INPUT_TEXT_LENGTH
+        ? specificationText.slice(-MAX_INPUT_TEXT_LENGTH)
+        : specificationText;
+
     const result = await this.callWithRetry(
-      () => this.model.generateContent(prompt + specificationText),
+      () => this.model.generateContent(prompt + truncatedText),
       'extractItems',
     );
     const text = result.response.text();
@@ -247,44 +234,6 @@ export class GeminiService implements OnModuleInit {
         `Failed to parse Gemini extraction response: ${text.substring(0, 200)}`,
       );
       throw new Error('Failed to parse item extraction response from Gemini');
-    }
-  }
-
-  async extractItemsFromImages(
-    imagesBase64: string[],
-    referenceItems: ContractItemReference[] = [],
-  ): Promise<ExtractedItem[]> {
-    if (!this.model) throw new Error('Gemini not configured');
-    if (imagesBase64.length === 0) {
-      return [];
-    }
-    const prompt = IMAGE_EXTRACTION_PROMPT.replace(
-      '{REFERENCE_ITEMS_BLOCK}',
-      this.buildReferenceItemsBlock(referenceItems),
-    );
-
-    const imageParts: Part[] = imagesBase64.map((data) => ({
-      inlineData: {
-        mimeType: 'image/png',
-        data,
-      },
-    }));
-
-    const result = await this.callWithRetry(
-      () => this.model.generateContent([{ text: prompt }, ...imageParts]),
-      'extractItemsFromImages',
-    );
-    const text = result.response.text();
-
-    try {
-      return this.normalizeExtractedItems(this.parseJsonArray<any>(text));
-    } catch {
-      this.logger.error(
-        `Failed to parse Gemini image extraction response: ${text.substring(0, 200)}`,
-      );
-      throw new Error(
-        'Failed to parse image-based item extraction response from Gemini',
-      );
     }
   }
 
