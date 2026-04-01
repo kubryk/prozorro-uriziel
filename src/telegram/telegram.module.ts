@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import '../env';
 import { TelegrafModule } from 'nestjs-telegraf';
 import { SearchModule } from '../search/search.module';
 import { PriceAnalysisModule } from '../price-analysis/price-analysis.module';

@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import '../../env';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ProzorroService } from '../../prozorro/prozorro.service';
 import {
@@ -30,9 +31,10 @@ function parsePositiveIntEnv(value: string | undefined, fallback: number): numbe
 }
 
 /** Strip null bytes that PostgreSQL rejects */
-function sanitize(val: string | number | null | undefined): string | null {
+function sanitize(val: string | number | null | undefined, maxLength?: number): string | null {
   if (val == null) return null;
-  return String(val).replace(/\0/g, '');
+  const str = String(val).replace(/\0/g, '');
+  return maxLength ? str.slice(0, maxLength) : str;
 }
 
 /** Safely parse a value to Float — Prozorro API sometimes returns numbers as strings */
@@ -383,7 +385,7 @@ export class TenderProcessor extends WorkerHost implements OnModuleDestroy {
           id: contract.id,
           data: {
             contractID: contract.contractID || null,
-            contractNumber: sanitize(contract.contractNumber),
+            contractNumber: sanitize(contract.contractNumber, 500),
             description: sanitize(contract.description),
             status: contract.status || null,
             amount,

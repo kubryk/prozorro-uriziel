@@ -1,6 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger, OnModuleDestroy } from '@nestjs/common';
+import '../env';
 import { PRICE_ANALYSIS_QUEUE_NAME } from '../constants';
 import { PriceAnalysisService } from './price-analysis.service';
 import { AnalysisJobData } from './price-analysis.types';
