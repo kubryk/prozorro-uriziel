@@ -43,27 +43,27 @@ find the current average market price {REGION_CONTEXT}(in UAH per contract unit)
 Items:
 {ITEMS}
 
-Critical unit-matching rules:
-- The returned price must match the contract unit, not just the product name.
+Unit-matching rules:
+- Prefer finding a price in exactly the contract unit. If you find it, set normalizedToContractUnit: true.
 - Carefully distinguish "шт/штука" from "упаковка/пачка/блістер/коробка/комплект".
 - For medicines and medical supplies, item names may contain pack-size markers like "№10", "№30", "№100". Market listings often show prices for the whole pack.
-- If the contract unit is a single piece and the market listing is a package price, convert to one piece only when the number of pieces in the package is explicit and reliable.
-- If the contract unit is a package and the market listing is a price per piece, convert to one package only when the package size is explicit and reliable.
-- If reliable conversion is not possible, set marketPrice to null and explain the unit mismatch in the source.
-- Do not compare different dosage forms, strengths, package sizes, or non-equivalent units.
+- If the contract unit is a single piece and the market listing is a package price, convert to one piece when the number of pieces in the package is explicit and reliable.
+- If the contract unit is a package/box/carton and the market listing is a price per piece or retail pack, convert to one package when the package size is explicit and reliable.
+- IMPORTANT: If reliable unit conversion is not possible, still return the best available market price you found — set normalizedToContractUnit: false and explain the unit mismatch clearly in the source field. Only set marketPrice to null if you genuinely cannot find any market price for the product at all.
+- Do not compare different dosage forms, strengths, or completely non-equivalent products.
 
 For each item, return a JSON array where each element has:
 - "itemName": string (same as input)
-- "marketPrice": number or null (average price in UAH per contract unit)
+- "marketPrice": number or null (best available price in UAH; per contract unit if matched, otherwise per found unit)
 - "marketPriceMin": number or null
 - "marketPriceMax": number or null
 - "pricingUnit": string or null (unit from the market listing before normalization, e.g. "упаковка №30", "1 шт", "блістер")
 - "unitsPerPackage": number or null (only when explicit and reliable)
-- "normalizedToContractUnit": boolean
-- "source": string (brief explanation in Ukrainian; mention if the price was normalized to the contract unit)
+- "normalizedToContractUnit": boolean (true only when the price is in the exact contract unit)
+- "source": string (brief explanation in Ukrainian; always mention the unit used in the market listing and whether it matches the contract unit)
 
-Use current Ukrainian market data{REGION_SEARCH_HINT}. If you cannot find a reliable price for an item,
-set marketPrice to null and explain why in the source field.
+Use current Ukrainian market data{REGION_SEARCH_HINT}. Set marketPrice to null only when you truly cannot find any market price for the product.
+Return ONLY the JSON array, no other text.
 Return ONLY the JSON array, no other text.`;
 
 const ITEMS_PER_BATCH = 10;
