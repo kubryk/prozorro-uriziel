@@ -174,14 +174,22 @@ function renderHtml(data: {
         .join('');
 
       const color = riskColor(analysis.riskScore);
-      // TODO: re-enable when market price search is active
-      // const finalAnalysis = buildFinalContractAnalysis({
-      //   contractAmount: analysis.contract.amount,
-      //   currency: analysis.contract.currency,
-      //   totalItems: analysis.totalItems,
-      //   itemsAboveMarket: analysis.itemsAboveMarket,
-      //   extractedItems: analysis.extractedItems,
-      // });
+      const finalAnalysis = buildFinalContractAnalysis({
+        contractAmount: analysis.contract.amount,
+        currency: analysis.contract.currency,
+        totalItems: analysis.totalItems,
+        itemsAboveMarket: analysis.itemsAboveMarket,
+        extractedItems: analysis.extractedItems,
+      });
+
+      const assessmentColor =
+        finalAnalysis.overallAssessment === 'ПОТЕНЦІЙНО ЗАВИЩЕНО'
+          ? '#dc2626'
+          : finalAnalysis.overallAssessment === 'ЗАНИЖЕНО'
+            ? '#2563eb'
+            : finalAnalysis.overallAssessment === 'РИНКОВО'
+              ? '#16a34a'
+              : '#6b7280';
 
       return `
       <div class="contract-card">
@@ -206,7 +214,19 @@ function renderHtml(data: {
         </div>
         ${links.length > 0 ? `<div class="links-row">${links.join('')}</div>` : ''}
         ${analysis.sourceDocumentTitle ? `<div class="doc-badge">${escapeHtml(analysis.sourceDocumentTitle)}</div>` : ''}
-        <!-- final-analysis blocks disabled — re-enable with market search -->
+        <div class="final-analysis">
+          <div class="final-assessment" style="border-left: 4px solid ${assessmentColor}">
+            <span class="final-assessment-label">Оцінка</span>
+            <span class="final-assessment-value" style="color:${assessmentColor}">${escapeHtml(finalAnalysis.overallAssessment)}</span>
+            ${finalAnalysis.overpricingSigns === 'ТАК' ? '<span class="overpricing-flag">⚠️ Ознаки завищення</span>' : ''}
+          </div>
+          <div class="final-stats">
+            ${finalAnalysis.marketCoveragePercent != null ? `<span class="fstat"><span class="fstat-label">Покриття ринком</span><span class="fstat-val">${finalAnalysis.marketCoveragePercent.toFixed(1)}%</span></span>` : ''}
+            ${finalAnalysis.averageDeviationPercent != null ? `<span class="fstat"><span class="fstat-label">Середнє відхилення</span><span class="fstat-val ${finalAnalysis.averageDeviationPercent > 0 ? 'text-red' : 'text-green'}">${finalAnalysis.averageDeviationPercent > 0 ? '+' : ''}${finalAnalysis.averageDeviationPercent.toFixed(1)}%</span></span>` : ''}
+            <span class="fstat"><span class="fstat-label">Узгодженість сум</span><span class="fstat-val">${escapeHtml(finalAnalysis.consistency)}</span></span>
+          </div>
+          <p class="final-comment">${escapeHtml(finalAnalysis.comment)}</p>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -310,14 +330,17 @@ function renderHtml(data: {
     .doc-badge { font-size: 0.78rem; color: #94a3b8; padding: 8px 24px 0; }
 
     /* Final analysis */
-    .final-analysis { padding: 16px 24px 0; }
-    .final-analysis-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .final-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; }
-    .final-card--wide { grid-column: 1 / -1; }
-    .final-title { font-size: 0.88rem; font-weight: 700; color: #1e293b; margin-bottom: 10px; }
-    .final-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font-size: 0.84rem; color: #475569; padding: 4px 0; }
-    .final-row strong { color: #0f172a; text-align: right; }
-    .final-comment { margin-top: 10px; font-size: 0.84rem; color: #334155; line-height: 1.6; }
+    .final-analysis { padding: 16px 24px 4px; }
+    .final-assessment { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      background: #f8fafc; border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; }
+    .final-assessment-label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .final-assessment-value { font-size: 0.95rem; font-weight: 700; }
+    .overpricing-flag { font-size: 0.8rem; color: #dc2626; font-weight: 600; margin-left: auto; }
+    .final-stats { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 10px; }
+    .fstat { display: flex; flex-direction: column; }
+    .fstat-label { font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; }
+    .fstat-val { font-size: 0.9rem; font-weight: 600; color: #1e293b; }
+    .final-comment { font-size: 0.82rem; color: #475569; line-height: 1.6; padding-bottom: 12px; }
 
     /* Table */
     .table-wrap { overflow-x: auto; }

@@ -526,62 +526,62 @@ export class PriceAnalysisService {
       });
 
       // Step 3: Search market prices
-      // TODO: re-enable when item extraction is verified
-      // await this.updateStatus(analysisId, 'SEARCHING_PRICES');
-      // const region = analysis.contract.tender?.customerRegion ?? null;
-      // const marketPrices = await this.gemini.searchMarketPrices(
-      //   extractedItems.map((item) => ({
-      //     itemName: item.itemName,
-      //     unit: item.unit,
-      //     quantity: item.quantity,
-      //   })),
-      //   region,
-      // );
-      // const savedItems = await this.prisma.priceAnalysisItem.findMany({
-      //   where: { analysisId },
-      //   orderBy: { id: 'asc' },
-      // });
-      // let itemsAboveMarket = 0;
-      // let weightedDeviationSum = 0;
-      // let totalWeight = 0;
-      // for (let i = 0; i < savedItems.length; i++) {
-      //   const marketData = marketPrices[i];
-      //   if (!marketData) continue;
-      //   const deviation =
-      //     marketData.marketPrice && marketData.marketPrice > 0
-      //       ? (savedItems[i].unitPrice - marketData.marketPrice) / marketData.marketPrice
-      //       : null;
-      //   if (deviation !== null && deviation > 0.2) itemsAboveMarket++;
-      //   const itemValue = savedItems[i].unitPrice * (savedItems[i].quantity || 1);
-      //   if (deviation !== null) {
-      //     weightedDeviationSum += Math.max(0, deviation) * itemValue;
-      //     totalWeight += itemValue;
-      //   }
-      //   await this.prisma.priceAnalysisItem.update({
-      //     where: { id: savedItems[i].id },
-      //     data: {
-      //       marketPrice: marketData.marketPrice,
-      //       marketPriceMin: marketData.marketPriceMin,
-      //       marketPriceMax: marketData.marketPriceMax,
-      //       marketSource: marketData.source,
-      //       priceDeviation: deviation,
-      //     },
-      //   });
-      // }
-      // const riskScore = totalWeight > 0 ? Math.min(1, weightedDeviationSum / totalWeight) : null;
+      await this.updateStatus(analysisId, 'SEARCHING_PRICES');
+      const region = analysis.contract.tender?.customerRegion ?? null;
+      const marketPrices = await this.gemini.searchMarketPrices(
+        extractedItems.map((item) => ({
+          itemName: item.itemName,
+          unit: item.unit,
+          quantity: item.quantity,
+        })),
+        region,
+      );
+      const savedItems = await this.prisma.priceAnalysisItem.findMany({
+        where: { analysisId },
+        orderBy: { id: 'asc' },
+      });
+      let itemsAboveMarket = 0;
+      let weightedDeviationSum = 0;
+      let totalWeight = 0;
+      for (let i = 0; i < savedItems.length; i++) {
+        const marketData = marketPrices[i];
+        if (!marketData) continue;
+        const deviation =
+          marketData.marketPrice && marketData.marketPrice > 0
+            ? (savedItems[i].unitPrice - marketData.marketPrice) / marketData.marketPrice
+            : null;
+        if (deviation !== null && deviation > 0.2) itemsAboveMarket++;
+        const itemValue = savedItems[i].unitPrice * (savedItems[i].quantity || 1);
+        if (deviation !== null) {
+          weightedDeviationSum += Math.max(0, deviation) * itemValue;
+          totalWeight += itemValue;
+        }
+        await this.prisma.priceAnalysisItem.update({
+          where: { id: savedItems[i].id },
+          data: {
+            marketPrice: marketData.marketPrice,
+            marketPriceMin: marketData.marketPriceMin,
+            marketPriceMax: marketData.marketPriceMax,
+            marketSource: marketData.source,
+            priceDeviation: deviation,
+          },
+        });
+      }
+      const riskScore = totalWeight > 0 ? Math.min(1, weightedDeviationSum / totalWeight) : null;
 
       await this.prisma.priceAnalysis.update({
         where: { id: analysisId },
         data: {
           status: 'COMPLETE',
           totalItems: extractedItems.length,
-          itemsAboveMarket: 0,
-          riskScore: null,
+          itemsAboveMarket,
+          riskScore,
         },
       });
 
       this.logger.log(
-        `Analysis ${analysisId} complete: ${extractedItems.length} items extracted (market search skipped)`,
+        `Analysis ${analysisId} complete: ${extractedItems.length} items, ` +
+          `${itemsAboveMarket} above market, riskScore=${riskScore?.toFixed(3) ?? 'n/a'}`,
       );
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
