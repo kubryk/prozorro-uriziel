@@ -11,6 +11,12 @@ export interface MarketSearchItem {
   quantity?: number | null;
 }
 
+export interface MarketSearchItemWithId {
+  id: string;
+  itemName: string;
+  unit: string | null;
+}
+
 export interface ContractItemReference {
   itemName: string;
   quantity: number | null;

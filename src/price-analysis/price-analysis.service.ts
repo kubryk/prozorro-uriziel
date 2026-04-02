@@ -122,13 +122,6 @@ export class PriceAnalysisService {
     messageId: number | undefined,
     reason: string,
   ): Promise<void> {
-    await this.prisma.priceAnalysis.deleteMany({
-      where: {
-        contractId,
-        status: { in: ['FAILED', 'SKIPPED'] },
-      },
-    });
-
     await this.prisma.priceAnalysis.create({
       data: {
         contractId,
@@ -188,32 +181,6 @@ export class PriceAnalysisService {
     const tenderSkipReason = this.getTenderSkipReason(tender?.status);
 
     for (const contract of contracts) {
-      // Skip if already has a pending/in-progress analysis
-      const existing = await this.prisma.priceAnalysis.findFirst({
-        where: {
-          contractId: contract.id,
-          status: {
-            in: [
-              'PENDING',
-              'DOWNLOADING_PDF',
-              'EXTRACTING_ITEMS',
-              'SEARCHING_PRICES',
-            ],
-          },
-        },
-      });
-      if (existing) {
-        analysisIds.push(existing.id);
-        startedContracts.push({
-          tenderId,
-          contractId: contract.id,
-          contractID: contract.contractID,
-          contractNumber: contract.contractNumber,
-          state: 'IN_PROGRESS',
-        });
-        continue;
-      }
-
       if (tenderSkipReason) {
         await this.createSkippedAnalysis(
           contract.id,
@@ -278,14 +245,6 @@ export class PriceAnalysisService {
         });
         continue;
       }
-
-      // Remove old FAILED/SKIPPED analyses so they don't block re-analysis
-      await this.prisma.priceAnalysis.deleteMany({
-        where: {
-          contractId: contract.id,
-          status: { in: ['FAILED', 'SKIPPED'] },
-        },
-      });
 
       const analysis = await this.prisma.priceAnalysis.create({
         data: {
@@ -424,52 +383,19 @@ export class PriceAnalysisService {
 
           const pdfBuffer = await this.pdfExtractor.downloadPdf(doc.url);
 
-          // Text extraction
-          const fullText =
-            await this.pdfExtractor.extractTextFromPdf(pdfBuffer);
+          // OCR extraction via Mistral (always)
+          // Pass the full OCR text directly to Gemini — Mistral returns clean markdown,
+          // Gemini finds the item table itself without keyword-based pre-filtering.
+          const ocrText = await this.mistralOcr.extractTextFromPdf(pdfBuffer);
 
-          // Find spec section; fall back to last 12 000 chars if not found
-          let effectiveText: string | null = null;
-          if (fullText.trim().length >= 50) {
-            effectiveText =
-              this.pdfExtractor.extractSpecificationSection(fullText) ?? null;
-            if (!effectiveText || effectiveText.trim().length < 50) {
-              this.logger.warn(
-                `Analysis ${analysisId}: spec section not found in "${doc.title}", using full-text fallback`,
-              );
-              effectiveText =
-                fullText.length > 12000 ? fullText.slice(-12000) : fullText;
-            }
-          }
-
-          // Step 2: Extract items via Gemini (text path)
-          let docItems: ExtractedItem[] =
-            effectiveText && effectiveText.trim().length >= 50
+          // Step 2: Extract items via Gemini
+          const docItems: ExtractedItem[] =
+            ocrText && ocrText.trim().length >= 50
               ? await this.gemini.extractItemsFromText(
-                  effectiveText,
+                  ocrText,
                   contractItemReferences,
                 )
               : [];
-
-          // Mistral OCR: if Gemini found nothing, try OCR and pass result to Gemini again
-          if (docItems.length === 0 && this.mistralOcr.isAvailable) {
-            this.logger.log(
-              `Analysis ${analysisId}: Gemini found 0 items, trying Mistral OCR for "${doc.title}"`,
-            );
-            const ocrText = await this.mistralOcr.extractTextFromPdf(pdfBuffer);
-            if (ocrText && ocrText.trim().length >= 50) {
-              let ocrEffective =
-                this.pdfExtractor.extractSpecificationSection(ocrText);
-              if (!ocrEffective || ocrEffective.trim().length < 50) {
-                ocrEffective =
-                  ocrText.length > 12000 ? ocrText.slice(-12000) : ocrText;
-              }
-              docItems = await this.gemini.extractItemsFromText(
-                ocrEffective,
-                contractItemReferences,
-              );
-            }
-          }
 
           if (docItems.length > 0) {
             extractedItems = docItems;
@@ -525,63 +451,21 @@ export class PriceAnalysisService {
         })),
       });
 
-      // Step 3: Search market prices
-      await this.updateStatus(analysisId, 'SEARCHING_PRICES');
-      const region = analysis.contract.tender?.customerRegion ?? null;
-      const marketPrices = await this.gemini.searchMarketPrices(
-        extractedItems.map((item) => ({
-          itemName: item.itemName,
-          unit: item.unit,
-          quantity: item.quantity,
-        })),
-        region,
-      );
-      const savedItems = await this.prisma.priceAnalysisItem.findMany({
-        where: { analysisId },
-        orderBy: { id: 'asc' },
-      });
-      let itemsAboveMarket = 0;
-      let weightedDeviationSum = 0;
-      let totalWeight = 0;
-      for (let i = 0; i < savedItems.length; i++) {
-        const marketData = marketPrices[i];
-        if (!marketData) continue;
-        const deviation =
-          marketData.marketPrice && marketData.marketPrice > 0
-            ? (savedItems[i].unitPrice - marketData.marketPrice) / marketData.marketPrice
-            : null;
-        if (deviation !== null && deviation > 0.2) itemsAboveMarket++;
-        const itemValue = savedItems[i].unitPrice * (savedItems[i].quantity || 1);
-        if (deviation !== null) {
-          weightedDeviationSum += Math.max(0, deviation) * itemValue;
-          totalWeight += itemValue;
-        }
-        await this.prisma.priceAnalysisItem.update({
-          where: { id: savedItems[i].id },
-          data: {
-            marketPrice: marketData.marketPrice,
-            marketPriceMin: marketData.marketPriceMin,
-            marketPriceMax: marketData.marketPriceMax,
-            marketSource: marketData.source,
-            priceDeviation: deviation,
-          },
-        });
-      }
-      const riskScore = totalWeight > 0 ? Math.min(1, weightedDeviationSum / totalWeight) : null;
+      // Step 3: Search market prices — temporarily disabled
+      // TODO: re-enable when market price search is ready
 
       await this.prisma.priceAnalysis.update({
         where: { id: analysisId },
         data: {
           status: 'COMPLETE',
           totalItems: extractedItems.length,
-          itemsAboveMarket,
-          riskScore,
+          itemsAboveMarket: 0,
+          riskScore: null,
         },
       });
 
       this.logger.log(
-        `Analysis ${analysisId} complete: ${extractedItems.length} items, ` +
-          `${itemsAboveMarket} above market, riskScore=${riskScore?.toFixed(3) ?? 'n/a'}`,
+        `Analysis ${analysisId} complete: ${extractedItems.length} items`,
       );
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));

@@ -613,7 +613,10 @@ export class TelegramUpdate {
       /\/$/,
       '',
     );
-    const viewUrl = `${appUrl}/price-analysis/view/${tenderId}`;
+    const runParam = result.analysisIds.length > 0
+      ? `?run=${result.analysisIds.join(',')}`
+      : '';
+    const viewUrl = `${appUrl}/price-analysis/view/${tenderId}${runParam}`;
     const tenderLabel = tender?.tenderID || tenderId;
     const tenderUrl = tender?.tenderID
       ? `https://prozorro.gov.ua/tender/${encodeURIComponent(tender.tenderID)}`
@@ -647,7 +650,7 @@ export class TelegramUpdate {
 
     // Start polling for completion
     if (result.analysisIds.length > 0) {
-      this.pollForCompletion(ctx, tenderId, chatId, statusMsg.message_id);
+      this.pollForCompletion(ctx, tenderId, chatId, statusMsg.message_id, result.analysisIds);
     }
   }
 
@@ -813,6 +816,7 @@ export class TelegramUpdate {
     tenderId: string,
     chatId: number,
     messageId?: number,
+    analysisIds: string[] = [],
   ) {
     const checkInterval = 15_000; // Check every 15 seconds
     const maxWait = 15 * 60 * 1000; // 15 minutes max
@@ -835,7 +839,7 @@ export class TelegramUpdate {
           const appUrl = (
             process.env.APP_URL || 'http://localhost:3000'
           ).replace(/\/$/, '');
-          const viewUrl = `${appUrl}/price-analysis/view/${tenderId}`;
+          const viewUrl = `${appUrl}/price-analysis/view/${tenderId}?run=${analysisIds.join(',')}`;
 
           const timeoutMessage = this.buildTenderAnalysisTimeoutMessage({
             tenderLabel,
@@ -885,7 +889,10 @@ export class TelegramUpdate {
           const appUrl = (
             process.env.APP_URL || 'http://localhost:3000'
           ).replace(/\/$/, '');
-          const viewUrl = `${appUrl}/price-analysis/view/${tenderId}`;
+          const runParam = analysisIds.length > 0
+            ? `?run=${analysisIds.join(',')}`
+            : '';
+          const viewUrl = `${appUrl}/price-analysis/view/${tenderId}${runParam}`;
 
           const contractsText =
             this.formatCompletedTenderAnalysisContracts(allDone);

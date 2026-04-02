@@ -1,4 +1,4 @@
-import { Controller, Get, Param, NotFoundException, Res } from '@nestjs/common';
+import { Controller, Get, Param, Query, NotFoundException, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { Public } from '../auth/api-key.guard';
 import { PrismaService } from '../prisma/prisma.service';
@@ -437,6 +437,7 @@ export class PriceAnalysisController {
   @Get('view/:tenderId')
   async viewTenderAnalysis(
     @Param('tenderId') tenderId: string,
+    @Query('run') run: string | undefined,
     @Res() res: Response,
   ): Promise<void> {
     const tender = await this.prisma.tender.findUnique({
@@ -458,8 +459,14 @@ export class PriceAnalysisController {
       throw new NotFoundException('Тендер не знайдено');
     }
 
+    const runIds = run
+      ? run.split(',').map((id) => id.trim()).filter(Boolean)
+      : null;
+
     const analyses = await this.prisma.priceAnalysis.findMany({
-      where: { contract: { tenderId } },
+      where: runIds
+        ? { id: { in: runIds } }
+        : { contract: { tenderId } },
       include: {
         extractedItems: { orderBy: { priceDeviation: 'desc' } },
         contract: {
@@ -477,17 +484,21 @@ export class PriceAnalysisController {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Take the latest analysis per contract
-    const latestByContract = new Map<string, (typeof analyses)[number]>();
-    for (const a of analyses) {
-      if (!latestByContract.has(a.contractId)) {
-        latestByContract.set(a.contractId, a);
+    // If no specific run requested — show latest per contract
+    let analysesToRender = analyses;
+    if (!runIds) {
+      const latestByContract = new Map<string, (typeof analyses)[number]>();
+      for (const a of analyses) {
+        if (!latestByContract.has(a.contractId)) {
+          latestByContract.set(a.contractId, a);
+        }
       }
+      analysesToRender = [...latestByContract.values()];
     }
 
     const html = renderHtml({
       tender,
-      analyses: [...latestByContract.values()],
+      analyses: analysesToRender,
     });
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

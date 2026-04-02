@@ -5,6 +5,7 @@ import {
   ExtractedItem,
   MarketPriceResult,
   MarketSearchItem,
+  MarketSearchItemWithId,
 } from './price-analysis.types';
 import {
   buildMarketSearchContext,
@@ -37,39 +38,31 @@ Return ONLY the JSON array, no other text.
 Text:
 `;
 
-const MARKET_PRICE_PROMPT = `For each of the following items from a Ukrainian public procurement contract,
-find the current average market price {REGION_CONTEXT}(in UAH per contract unit).
+// Single-item search prompt — one Gemini call per contract item
+const SINGLE_ITEM_SEARCH_PROMPT = `Знайди поточну середню ринкову ціну в Україні{REGION_CONTEXT} для товару з держзакупівлі.
 
-Items:
-{ITEMS}
+Товар: {ITEM_NAME}
+Одиниця: {CONTRACT_UNIT}{PACKAGING_HINT}
 
-Unit-matching rules:
-- Prefer finding a price in exactly the contract unit. If you find it, set normalizedToContractUnit: true.
-- Carefully distinguish "шт/штука" from "упаковка/пачка/блістер/коробка/комплект".
-- For medicines and medical supplies, item names may contain pack-size markers like "№10", "№30", "№100". Market listings often show prices for the whole pack.
-- If the contract unit is a single piece and the market listing is a package price, convert to one piece when the number of pieces in the package is explicit and reliable.
-- If the contract unit is a package/box/carton and the market listing is a price per piece or retail pack, convert to one package when the package size is explicit and reliable.
-- IMPORTANT: If reliable unit conversion is not possible, still return the best available market price you found — set normalizedToContractUnit: false and explain the unit mismatch clearly in the source field. Only set marketPrice to null if you genuinely cannot find any market price for the product at all.
-- Do not compare different dosage forms, strengths, or completely non-equivalent products.
+Знайди найближчу ринкову ціну для цього товару. Якщо точно такий не знайдено — використай ціну найбільш схожого аналогу.
+Якщо одиниця відрізняється — поверни ціну в знайденій одиниці і поясни в source.
 
-For each item, return a JSON array where each element has:
-- "itemName": string (same as input)
-- "marketPrice": number or null (best available price in UAH; per contract unit if matched, otherwise per found unit)
-- "marketPriceMin": number or null
-- "marketPriceMax": number or null
-- "pricingUnit": string or null (unit from the market listing before normalization, e.g. "упаковка №30", "1 шт", "блістер")
-- "unitsPerPackage": number or null (only when explicit and reliable)
-- "normalizedToContractUnit": boolean (true only when the price is in the exact contract unit)
-- "source": string (brief explanation in Ukrainian; always mention the unit used in the market listing and whether it matches the contract unit)
+Поверни JSON об'єкт:
+- "marketPrice": number або null (null тільки якщо взагалі нічого не знайдено)
+- "marketPriceMin": number або null
+- "marketPriceMax": number або null
+- "pricingUnit": string або null (одиниця з ринкового лістингу)
+- "unitsPerPackage": number або null
+- "normalizedToContractUnit": boolean
+- "source": string (1-2 речення Ukrainian; що знайдено і де)
 
-Use current Ukrainian market data{REGION_SEARCH_HINT}. Set marketPrice to null only when you truly cannot find any market price for the product.
-Return ONLY the JSON array, no other text.
-Return ONLY the JSON array, no other text.`;
+Використовуй поточні українські ринкові дані{REGION_SEARCH_HINT}.
+Поверни ТІЛЬКИ JSON об'єкт, без іншого тексту.`;
 
-const ITEMS_PER_BATCH = 10;
+const MARKET_SEARCH_CONCURRENCY = 3;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 2_000;
-const MAX_INPUT_TEXT_LENGTH = 30_000;
+const MAX_INPUT_TEXT_LENGTH = 60_000;
 
 @Injectable()
 export class GeminiService implements OnModuleInit {
@@ -117,6 +110,31 @@ export class GeminiService implements OnModuleInit {
       throw new Error(`Expected JSON array but got ${typeof parsed}`);
     }
     return parsed as T[];
+  }
+
+  private parseJsonObject<T>(text: string): T {
+    const trimmedText = text.trim();
+    const fencedMatch = trimmedText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    const candidate = fencedMatch?.[1]?.trim() || trimmedText;
+
+    const parsed: unknown = JSON.parse(candidate);
+
+    // Accept single-element arrays — Gemini sometimes wraps object in array
+    if (Array.isArray(parsed)) {
+      if (
+        parsed.length === 1 &&
+        typeof parsed[0] === 'object' &&
+        parsed[0] !== null
+      ) {
+        return parsed[0] as T;
+      }
+      throw new Error(`Expected JSON object but got array with ${parsed.length} elements`);
+    }
+
+    if (typeof parsed !== 'object' || parsed === null) {
+      throw new Error(`Expected JSON object but got ${typeof parsed}`);
+    }
+    return parsed as T;
   }
 
   private normalizeExtractedItems(items: any[]): ExtractedItem[] {
@@ -243,104 +261,158 @@ export class GeminiService implements OnModuleInit {
   ): Promise<MarketPriceResult[]> {
     if (!this.searchModel) throw new Error('Gemini not configured');
 
-    const results: MarketPriceResult[] = [];
+    const results: MarketPriceResult[] = new Array(items.length);
 
-    // Process in batches of ITEMS_PER_BATCH
-    for (let i = 0; i < items.length; i += ITEMS_PER_BATCH) {
-      const batch = items.slice(i, i + ITEMS_PER_BATCH);
-      const batchResults = await this.searchMarketPricesBatch(batch, region);
-      results.push(...batchResults);
+    for (let i = 0; i < items.length; i += MARKET_SEARCH_CONCURRENCY) {
+      const chunk = items.slice(i, i + MARKET_SEARCH_CONCURRENCY);
+      const chunkResults = await Promise.all(
+        chunk.map(async (item) => {
+          try {
+            return await this.searchSingleItem(item, region);
+          } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error);
+            this.logger.warn(
+              `Market price search failed for "${item.itemName.substring(0, 50)}": ${msg}`,
+            );
+            return {
+              itemName: item.itemName,
+              marketPrice: null,
+              marketPriceMin: null,
+              marketPriceMax: null,
+              source: 'Помилка при пошуку ринкової ціни',
+            };
+          }
+        }),
+      );
+      for (let j = 0; j < chunkResults.length; j++) {
+        results[i + j] = chunkResults[j];
+      }
     }
 
     return results;
   }
 
-  private async searchMarketPricesBatch(
-    items: MarketSearchItem[],
+  async searchMarketPricesById(
+    items: MarketSearchItemWithId[],
     region?: string | null,
-  ): Promise<MarketPriceResult[]> {
-    const itemsJson = JSON.stringify(
-      items.map((item) => {
-        const context = buildMarketSearchContext(item);
-        return {
-          itemName: context.itemName,
-          contractUnit: context.unit || 'шт',
-          contractUnitKind: context.contractUnitKind,
-          declaredPackSize: context.declaredPackSize,
-          packagingHint: context.packagingHint,
-        };
-      }),
-    );
+  ): Promise<Map<string, MarketPriceResult>> {
+    if (!this.searchModel) throw new Error('Gemini not configured');
 
-    const regionContext = region ? `в регіоні "${region}" ` : '';
+    const resultMap = new Map<string, MarketPriceResult>();
+
+    for (let i = 0; i < items.length; i += MARKET_SEARCH_CONCURRENCY) {
+      const chunk = items.slice(i, i + MARKET_SEARCH_CONCURRENCY);
+      const chunkResults = await Promise.all(
+        chunk.map(async (item) => {
+          try {
+            const result = await this.searchSingleItem(
+              { itemName: item.itemName, unit: item.unit },
+              region,
+            );
+            return [item.id, result] as [string, MarketPriceResult];
+          } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error);
+            this.logger.warn(
+              `Market price search failed for id=${item.id.substring(0, 8)} "${item.itemName.substring(0, 50)}": ${msg}`,
+            );
+            return [
+              item.id,
+              {
+                itemName: item.itemName,
+                marketPrice: null,
+                marketPriceMin: null,
+                marketPriceMax: null,
+                source: null,
+              },
+            ] as [string, MarketPriceResult];
+          }
+        }),
+      );
+      for (const [id, result] of chunkResults) {
+        resultMap.set(id, result);
+      }
+    }
+
+    return resultMap;
+  }
+
+  private async searchSingleItem(
+    item: MarketSearchItem,
+    region?: string | null,
+  ): Promise<MarketPriceResult> {
+    const context = buildMarketSearchContext(item);
+
+    const regionContext = region ? ` в регіоні "${region}"` : '';
     const regionSearchHint = region
       ? `, пріоритизуй ціни для регіону "${region}", але якщо регіональні дані відсутні — використовуй загальноукраїнські`
       : '';
+    const packagingHint = context.packagingHint
+      ? `\nПримітка: ${context.packagingHint}`
+      : '';
 
-    const prompt = MARKET_PRICE_PROMPT.replace(
+    const prompt = SINGLE_ITEM_SEARCH_PROMPT.replace(
       '{REGION_CONTEXT}',
       regionContext,
     )
       .replace('{REGION_SEARCH_HINT}', regionSearchHint)
-      .replace('{ITEMS}', itemsJson);
-    const result = await this.callWithRetry(
+      .replace('{ITEM_NAME}', context.itemName)
+      .replace('{CONTRACT_UNIT}', context.unit || 'шт')
+      .replace('{PACKAGING_HINT}', packagingHint);
+
+    const response = await this.callWithRetry(
       () => this.searchModel.generateContent(prompt),
-      'searchMarketPrices',
+      `searchItem:${item.itemName.substring(0, 40)}`,
     );
-    const text = result.response.text();
+    const text = response.response.text();
+    this.logger.debug(
+      `searchSingleItem raw response for "${item.itemName.substring(0, 50)}": ${text.substring(0, 300)}`,
+    );
 
     try {
-      const parsed = this.parseJsonArray<any>(text);
-      return items.map((inputItem, index) => {
-        const item = parsed[index] ?? {};
-        const result: MarketPriceResult = {
-          itemName:
-            typeof item.itemName === 'string'
-              ? item.itemName
-              : inputItem.itemName,
-          marketPrice:
-            typeof item.marketPrice === 'number' && isFinite(item.marketPrice)
-              ? item.marketPrice
-              : null,
-          marketPriceMin:
-            typeof item.marketPriceMin === 'number' &&
-            isFinite(item.marketPriceMin)
-              ? item.marketPriceMin
-              : null,
-          marketPriceMax:
-            typeof item.marketPriceMax === 'number' &&
-            isFinite(item.marketPriceMax)
-              ? item.marketPriceMax
-              : null,
-          source: typeof item.source === 'string' ? item.source : null,
-          pricingUnit:
-            typeof item.pricingUnit === 'string' ? item.pricingUnit : null,
-          unitsPerPackage:
-            typeof item.unitsPerPackage === 'number' &&
-            isFinite(item.unitsPerPackage) &&
-            item.unitsPerPackage > 1
-              ? item.unitsPerPackage
-              : null,
-          normalizedToContractUnit:
-            typeof item.normalizedToContractUnit === 'boolean'
-              ? item.normalizedToContractUnit
-              : null,
-        };
-
-        return normalizeMarketPriceResult(inputItem, result);
-      });
+      const parsed = this.parseJsonObject<any>(text);
+      const result: MarketPriceResult = {
+        itemName: item.itemName,
+        marketPrice:
+          typeof parsed.marketPrice === 'number' && isFinite(parsed.marketPrice)
+            ? parsed.marketPrice
+            : null,
+        marketPriceMin:
+          typeof parsed.marketPriceMin === 'number' &&
+          isFinite(parsed.marketPriceMin)
+            ? parsed.marketPriceMin
+            : null,
+        marketPriceMax:
+          typeof parsed.marketPriceMax === 'number' &&
+          isFinite(parsed.marketPriceMax)
+            ? parsed.marketPriceMax
+            : null,
+        source: typeof parsed.source === 'string' ? parsed.source : null,
+        pricingUnit:
+          typeof parsed.pricingUnit === 'string' ? parsed.pricingUnit : null,
+        unitsPerPackage:
+          typeof parsed.unitsPerPackage === 'number' &&
+          isFinite(parsed.unitsPerPackage) &&
+          parsed.unitsPerPackage > 1
+            ? parsed.unitsPerPackage
+            : null,
+        normalizedToContractUnit:
+          typeof parsed.normalizedToContractUnit === 'boolean'
+            ? parsed.normalizedToContractUnit
+            : null,
+      };
+      return normalizeMarketPriceResult(item, result);
     } catch {
-      this.logger.error(
-        `Failed to parse Gemini market price response: ${text.substring(0, 200)}`,
+      this.logger.warn(
+        `Failed to parse search response for "${item.itemName.substring(0, 40)}": ${text.substring(0, 300)}`,
       );
-      // Return empty results for this batch rather than failing entirely
-      return items.map((item) => ({
+      return {
         itemName: item.itemName,
         marketPrice: null,
         marketPriceMin: null,
         marketPriceMax: null,
         source: 'Не вдалося отримати ринкову ціну',
-      }));
+      };
     }
   }
+
 }

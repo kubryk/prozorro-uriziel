@@ -19,7 +19,7 @@ const TABLE_HEADER_PATTERNS = [
   /(?:ціна|вартість)/i,
   /(?:одиниця|од\.?\s*виміру)/i,
 ];
-const MAX_SECTION_LENGTH = 15_000;
+const MAX_SECTION_LENGTH = 60_000;
 const MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 const PRICE_VALUE_PATTERN = /\b\d+[.,]\d{2}\b/g;
 
