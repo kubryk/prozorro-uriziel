@@ -1,0 +1,158 @@
+{
+    "data": {
+        "awardID": "2ecea188e59a4ca7bfd35fde22f4f2d6",
+        "contractID": "UA-2024-12-10-010819-a-b1",
+        "contractNumber": "20310126",
+        "description": "договір №20310126 від 01.01.2025",
+        "dateSigned": "2025-01-01T11:35:00+02:00",
+        "date": "2026-01-28T22:05:38+02:00",
+        "dateModified": "2026-01-28T22:05:38+02:00",
+        "dateCreated": "2024-12-20T11:56:56+02:00",
+        "items": [
+            {
+                "id": "85669497b9e6430089f02ae31d1d840b",
+                "description": "Електрична енергія",
+                "quantity": 111420.0,
+                "classification": {
+                    "scheme": "ДК021",
+                    "id": "09310000-5",
+                    "description": "Електрична енергія"
+                },
+                "unit": {
+                    "name": "кіловат-година",
+                    "code": "KWH",
+                    "value": {
+                        "amount": 9.140064,
+                        "currency": "UAH",
+                        "valueAddedTaxIncluded": true
+                    }
+                },
+                "deliveryAddress": {
+                    "streetAddress": "вул. Миру, 30",
+                    "locality": "с. Рашівка",
+                    "region": "Полтавська область",
+                    "postalCode": "37343",
+                    "countryName": "Україна"
+                },
+                "deliveryDate": {
+                    "startDate": "2025-01-01T00:00:00+02:00",
+                    "endDate": "2025-12-31T00:00:00+02:00"
+                },
+                "relatedLot": "293c38327dcb477e9d6c2ebe45dfe6e2",
+                "attributes": [
+                    {
+                        "name": "Послуги розподілу включено",
+                        "values": [
+                            false
+                        ]
+                    }
+                ]
+            }
+        ],
+        "tender_id": "00ddee0e51234169957fbf45f10a43b7",
+        "owner": "prom.ua",
+        "status": "terminated",
+        "period": {
+            "startDate": "2025-01-01T00:00:00+02:00",
+            "endDate": "2025-12-31T00:00:00+02:00"
+        },
+        "buyer": {
+            "name": "РАШІВСЬКИЙ ПСИХОНЕВРОЛОГІЧНИЙ БУДИНОК-ІНТЕРНАТ",
+            "identifier": {
+                "scheme": "UA-EDR",
+                "id": "03189216",
+                "legalName": "РАШІВСЬКИЙ ПСИХОНЕВРОЛОГІЧНИЙ БУДИНОК-ІНТЕРНАТ",
+                "uri": "https://rashivskyy-internat.pl.ua"
+            },
+            "address": {
+                "streetAddress": "вул. Миру, 30",
+                "locality": "с. Рашівка",
+                "region": "Полтавська область",
+                "postalCode": "37343",
+                "countryName": "Україна"
+            },
+            "kind": "general"
+        },
+        "suppliers": [
+            {
+                "name": "ТОВ \"ПОЛТАВАЕНЕРГОЗБУТ\"",
+                "name_en": "Limited Liability Company POLTAVAENERGOZBUT",
+                "identifier": {
+                    "scheme": "UA-EDR",
+                    "id": "42223804",
+                    "legalName": "ТОВ \"ПОЛТАВАЕНЕРГОЗБУТ\"",
+                    "legalName_en": "LLC POLTAVAENERGOZBUT"
+                },
+                "address": {
+                    "streetAddress": "вул. ПАНЯНКА, 65Б",
+                    "locality": "Полтава",
+                    "region": "Полтавська область",
+                    "postalCode": "36022",
+                    "countryName": "Україна"
+                },
+                "scale": "large"
+            }
+        ],
+        "changes": [
+            {
+                "id": "357c5597a6184d7d801264b77c7b9587",
+                "status": "active",
+                "rationale": "Зміна ціни на електричну енергію відповідно до постанови НКРЕКП від 19.12.2024 №2200...",
+                "rationaleTypes": [
+                    "itemPriceChange"
+                ],
+                "contractNumber": "1",
+                "date": "2025-02-26T12:23:01+02:00",
+                "dateSigned": "2025-02-17T14:17:00+02:00"
+            }
+        ],
+        "documents": [
+            {
+                "id": "99ba770e2e0a4091aa9f9b301649385e",
+                "confidentiality": "public",
+                "documentType": "contractSigned",
+                "title": "договір електрика 1047600_.pdf",
+                "format": "application/pdf",
+                "url": "https://public.api.openprocurement.org/api/2.5/contracts/66396f9f5d23410694a1f74042af8266/documents/99ba770e2e0a4091aa9f9b301649385e?download=c5e772aafd4d49c0a0acc7c1ada2dd32",
+                "description": "SHA1:47f587a71d...",
+                "hash": "md5:0c66484396a23ab5528141847ea5ee4a",
+                "documentOf": "contract",
+                "datePublished": "2025-01-01T11:35:59+02:00",
+                "dateModified": "2025-01-01T11:35:59+02:00"
+            }
+        ],
+        "amountPaid": {
+            "amount": 1047600.0,
+            "currency": "UAH",
+            "amountNet": 873000.0,
+            "valueAddedTaxIncluded": true
+        },
+        "value": {
+            "amount": 1047600.0,
+            "currency": "UAH",
+            "valueAddedTaxIncluded": true,
+            "amountNet": 873000.0
+        },
+        "milestones": [
+            {
+                "id": "bf566a6a832749cebaf0c8cf7987f8f9",
+                "title": "deliveryOfGoods",
+                "description": "Оплата рахунку протягом 7 робочих днів від дати отримання акту.",
+                "type": "financing",
+                "code": "postpayment",
+                "percentage": 100.0,
+                "duration": {
+                    "days": 7,
+                    "type": "working"
+                },
+                "sequenceNumber": 1,
+                "status": "scheduled"
+            }
+        ],
+        "contractChangeRationaleTypes": {},
+        "id": "66396f9f5d23410694a1f74042af8266"
+    },
+    "config": {
+        "restricted": false
+    }
+}

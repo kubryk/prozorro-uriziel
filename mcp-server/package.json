@@ -1,0 +1,25 @@
+{
+  "name": "prozorro-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for querying Prozorro procurement data",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "postinstall": "rm -rf node_modules/@prisma node_modules/.prisma"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.15.0",
+    "@prisma/client": "^5.22.0",
+    "dotenv": "^17.3.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3"
+  },
+  "prisma": {
+    "schema": "../prisma/schema.prisma"
+  }
+}

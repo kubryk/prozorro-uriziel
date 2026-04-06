@@ -1,0 +1,261 @@
+{
+    "data": {
+        "title": "Послуги з організації виставок",
+        "description": "Повний опис предмету закупівлі",
+        "date": "2021-12-24T17:41:12+02:00",
+        "dateModified": "2025-01-01T02:01:12+02:00",
+        "tenderID": "UA-2021-12-07-017186-c",
+        "owner": "it.ua",
+        "mainProcurementCategory": "services",
+        "milestones": [
+            {
+                "id": "20505b5c6a93449ebc1f8d687f637a98",
+                "title": "submittingServices",
+                "type": "financing",
+                "code": "postpayment",
+                "percentage": 100.0,
+                "duration": {
+                    "days": 30,
+                    "type": "calendar"
+                },
+                "sequenceNumber": 0
+            }
+        ],
+        "plans": [
+            {
+                "id": "609219f450a64b51ab5a32d302d8355d"
+            }
+        ],
+        "procurementMethod": "open",
+        "submissionMethod": "electronicAuction",
+        "criteria": [
+            {
+                "id": "32096409ca9a45f88aa7c58edd546fbc",
+                "title": "Заборгованість зі сплати податків і зборів",
+                "source": "tenderer",
+                "relatesTo": "tenderer",
+                "classification": {
+                    "scheme": "ESPD211",
+                    "id": "CRITERION.EXCLUSION.CONTRIBUTIONS.PAYMENT_OF_TAXES"
+                },
+                "requirementGroups": [
+                    {
+                        "id": "a82492fd22154312b6a98ea0e7feaf79",
+                        "requirements": [
+                            {
+                                "id": "1d9844075298450392a814444df3ab09",
+                                "title": "Відсутня заборгованість",
+                                "dataType": "boolean",
+                                "expectedValue": "true",
+                                "status": "active"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "value": {
+            "amount": 70560.0,
+            "currency": "UAH",
+            "valueAddedTaxIncluded": true
+        },
+        "procuringEntity": {
+            "name": "Департамент культури Івано-Франківської міської ради",
+            "identifier": {
+                "scheme": "UA-EDR",
+                "id": "40293230",
+                "legalName": "Департамент культури Івано-Франківської міської ради"
+            },
+            "address": {
+                "streetAddress": "вул. Дністровська, 28",
+                "locality": "Івано-Франківськ",
+                "region": "Івано-Франківська область",
+                "postalCode": "76018",
+                "countryName": "Україна"
+            },
+            "contactPoint": {
+                "name": "Іванов Іван",
+                "email": "example@gmail.com",
+                "telephone": "380342000000"
+            },
+            "kind": "general"
+        },
+        "minimalStep": {
+            "amount": 352.8,
+            "currency": "UAH",
+            "valueAddedTaxIncluded": true
+        },
+        "auctionUrl": "https://auctions.prozorro.gov.ua/tenders/aa90a68a8e8f41b4ba8f46789bd5aa24",
+        "awardCriteria": "lowestCost",
+        "enquiryPeriod": {
+            "startDate": "2021-12-07T17:59:21+02:00",
+            "endDate": "2021-12-13T00:00:00+02:00",
+            "clarificationsUntil": "2021-12-16T00:00:00+02:00"
+        },
+        "tenderPeriod": {
+            "startDate": "2021-12-07T17:59:21+02:00",
+            "endDate": "2021-12-23T19:00:00+02:00"
+        },
+        "auctionPeriod": {
+            "startDate": "2021-12-24T14:13:36+02:00",
+            "endDate": "2021-12-24T14:36:37+02:00"
+        },
+        "bids": [
+            {
+                "tenderers": [
+                    {
+                        "name": "ФОП Данильчук Микола Андрійович",
+                        "identifier": {
+                            "scheme": "UA-EDR",
+                            "id": "3077403474",
+                            "legalName": "ФОП Данильчук Микола Андрійович"
+                        },
+                        "address": {
+                            "locality": "Івано-Франківськ",
+                            "region": "Івано-Франківська область",
+                            "countryName": "Україна"
+                        },
+                        "contactPoint": {
+                            "name": "Данильчук Микола",
+                            "email": "example@gmail.com",
+                            "telephone": "380633000000"
+                        },
+                        "scale": "sme"
+                    }
+                ],
+                "date": "2021-12-16T21:08:52+02:00",
+                "id": "097164404e364d14bd4ab7c669e5deea",
+                "value": {
+                    "amount": 70000.0,
+                    "currency": "UAH",
+                    "valueAddedTaxIncluded": true
+                },
+                "status": "active",
+                "selfQualified": true
+            }
+        ],
+        "procurementMethodType": "aboveThresholdUA",
+        "items": [
+            {
+                "id": "48f585aadcf54fe09fb25c4c76afc387",
+                "description": "Послуги з організації виставок, ярмарок і конгресів",
+                "quantity": 7.0,
+                "classification": {
+                    "scheme": "ДК021",
+                    "id": "79950000-8",
+                    "description": "Послуги з організації виставок"
+                },
+                "unit": {
+                    "name": "посл.",
+                    "code": "E48"
+                },
+                "deliveryDate": {
+                    "startDate": "2021-12-01T00:00:00+02:00",
+                    "endDate": "2022-01-31T00:00:00+02:00"
+                },
+                "deliveryAddress": {
+                    "streetAddress": "Дністровська, 28",
+                    "locality": "Івано-Франківськ",
+                    "region": "Івано-Франківська область",
+                    "postalCode": "76018",
+                    "countryName": "Україна"
+                }
+            }
+        ],
+        "status": "active.awarded",
+        "awardPeriod": {
+            "startDate": "2021-12-24T14:36:37+02:00",
+            "endDate": "2021-12-24T17:41:12+02:00"
+        },
+        "awards": [
+            {
+                "id": "23bfb82d775c40e285be44989a8195fd",
+                "status": "active",
+                "date": "2021-12-24T17:41:12+02:00",
+                "value": {
+                    "amount": 70000.0,
+                    "currency": "UAH",
+                    "valueAddedTaxIncluded": true
+                },
+                "suppliers": [
+                    {
+                        "name": "ФОП Данильчук Микола Андрійович",
+                        "identifier": {
+                            "scheme": "UA-EDR",
+                            "id": "3077403474"
+                        }
+                    }
+                ],
+                "bid_id": "097164404e364d14bd4ab7c669e5deea",
+                "title": "Визнаний переможцем",
+                "qualified": true,
+                "eligible": true,
+                "complaintPeriod": {
+                    "startDate": "2021-12-24T17:41:12+02:00",
+                    "endDate": "2022-01-04T00:00:00+02:00"
+                }
+            }
+        ],
+        "contracts": [
+            {
+                "id": "ca41e16ab89446b3816fe360a0e168a6",
+                "awardID": "23bfb82d775c40e285be44989a8195fd",
+                "contractID": "UA-2021-12-07-017186-c-b1",
+                "status": "pending",
+                "value": {
+                    "amount": 70000.0,
+                    "currency": "UAH",
+                    "valueAddedTaxIncluded": true,
+                    "amountNet": 70000.0
+                },
+                "items": [
+                    {
+                        "id": "48f585aadcf54fe09fb25c4c76afc387",
+                        "description": "Послуги з організації виставок, ярмарок і конгресів",
+                        "classification": {
+                            "scheme": "ДК021",
+                            "id": "79950000-8"
+                        },
+                        "unit": {
+                            "name": "посл.",
+                            "code": "E48"
+                        },
+                        "quantity": 7.0,
+                        "deliveryDate": {
+                            "startDate": "2021-12-01T00:00:00+02:00",
+                            "endDate": "2022-01-31T00:00:00+02:00"
+                        }
+                    }
+                ],
+                "suppliers": [
+                    {
+                        "name": "ФОП Данильчук Микола Андрійович",
+                        "identifier": {
+                            "scheme": "UA-EDR",
+                            "id": "3077403474"
+                        }
+                    }
+                ],
+                "date": "2021-12-24T17:41:12+02:00"
+            }
+        ],
+        "dateCreated": "2021-12-07T17:56:22+02:00",
+        "complaintPeriod": {
+            "startDate": "2021-12-07T17:59:21+02:00",
+            "endDate": "2021-12-19T00:00:00+02:00"
+        },
+        "id": "aa90a68a8e8f41b4ba8f46789bd5aa24"
+    },
+    "config": {
+        "hasAuction": true,
+        "valueCurrencyEquality": true,
+        "hasAwardingOrder": true,
+        "hasValueRestriction": true,
+        "hasPrequalification": false,
+        "minBidsNumber": 2,
+        "hasAwardComplaints": true,
+        "hasCancellationComplaints": true,
+        "hasTenderComplaints": true,
+        "restricted": false
+    }
+}

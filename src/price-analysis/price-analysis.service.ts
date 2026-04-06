@@ -10,6 +10,7 @@ import {
   AnalysisJobData,
   ContractItemReference,
   ExtractedItem,
+  MarketSearchItemWithId,
   SkippedAnalysisContract,
   StartedAnalysisContract,
   TriggerBulkAnalysisResult,
@@ -383,16 +384,25 @@ export class PriceAnalysisService {
 
           const pdfBuffer = await this.pdfExtractor.downloadPdf(doc.url);
 
-          // OCR extraction via Mistral (always)
-          // Pass the full OCR text directly to Gemini — Mistral returns clean markdown,
-          // Gemini finds the item table itself without keyword-based pre-filtering.
+          // OCR extraction via Mistral, fallback to native pdf-parse
+          let pdfText: string | null = null;
           const ocrText = await this.mistralOcr.extractTextFromPdf(pdfBuffer);
+          if (ocrText && ocrText.trim().length >= 50) {
+            pdfText = ocrText;
+          } else {
+            this.logger.warn(
+              `Analysis ${analysisId}: Mistral OCR unavailable or returned empty, falling back to native pdf-parse`,
+            );
+            const nativeText = await this.pdfExtractor.extractTextFromPdf(pdfBuffer);
+            const specSection = this.pdfExtractor.extractSpecificationSection(nativeText);
+            pdfText = specSection ?? (nativeText.trim().length >= 50 ? nativeText : null);
+          }
 
           // Step 2: Extract items via Gemini
           const docItems: ExtractedItem[] =
-            ocrText && ocrText.trim().length >= 50
+            pdfText
               ? await this.gemini.extractItemsFromText(
-                  ocrText,
+                  pdfText,
                   contractItemReferences,
                 )
               : [];
@@ -451,21 +461,84 @@ export class PriceAnalysisService {
         })),
       });
 
-      // Step 3: Search market prices — temporarily disabled
-      // TODO: re-enable when market price search is ready
+      // Fetch saved items to get DB-assigned IDs
+      const savedItems = await this.prisma.priceAnalysisItem.findMany({
+        where: { analysisId },
+        orderBy: { id: 'asc' },
+      });
+
+      // Step 3: Search market prices via Gemini
+      await this.updateStatus(analysisId, 'SEARCHING_PRICES');
+      const region = analysis.contract.tender?.customerRegion ?? null;
+      const dateSigned = analysis.contract.dateSigned ?? null;
+      const searchItems: MarketSearchItemWithId[] = savedItems.map((item) => ({
+        id: item.id,
+        itemName: item.itemName,
+        unit: item.unit,
+      }));
+      const marketPricesById = await this.gemini.searchMarketPricesById(
+        searchItems,
+        region,
+        dateSigned,
+      );
+
+      let itemsAboveMarket = 0;
+      let weightedDeviationSum = 0;
+      let totalWeight = 0;
+      for (const savedItem of savedItems) {
+        const marketData = marketPricesById.get(savedItem.id);
+        if (!marketData) continue;
+
+        const rawDeviation =
+          marketData.marketPrice && marketData.marketPrice > 0
+            ? (savedItem.unitPrice - marketData.marketPrice) / marketData.marketPrice
+            : null;
+
+        const isSuspicious = rawDeviation !== null && Math.abs(rawDeviation) > 0.9;
+        const deviation = isSuspicious ? null : rawDeviation;
+        const effectiveMarketPrice = marketData.marketPrice;
+        const effectiveMarketPriceMin = marketData.marketPriceMin;
+        const effectiveMarketPriceMax = marketData.marketPriceMax;
+
+        let sourceNote = marketData.source ?? null;
+        if (isSuspicious) {
+          sourceNote = `[⚠️ Приблизна ціна, велике відхилення] ${sourceNote ?? ''}`.trim();
+        } else if (marketData.normalizedToContractUnit === false && marketData.source && effectiveMarketPrice !== null) {
+          sourceNote = `[⚠️ Одиниця не відповідає] ${marketData.source}`;
+        }
+
+        if (deviation !== null && deviation > 0.2) itemsAboveMarket++;
+        const itemValue = savedItem.unitPrice * (savedItem.quantity || 1);
+        if (deviation !== null) {
+          weightedDeviationSum += Math.max(0, deviation) * itemValue;
+          totalWeight += itemValue;
+        }
+        await this.prisma.priceAnalysisItem.update({
+          where: { id: savedItem.id },
+          data: {
+            marketPrice: effectiveMarketPrice,
+            marketPriceMin: effectiveMarketPriceMin,
+            marketPriceMax: effectiveMarketPriceMax,
+            marketSource: sourceNote,
+            priceDeviation: deviation,
+          },
+        });
+      }
+      const riskScore = totalWeight > 0 ? Math.min(1, weightedDeviationSum / totalWeight) : null;
 
       await this.prisma.priceAnalysis.update({
         where: { id: analysisId },
         data: {
           status: 'COMPLETE',
           totalItems: extractedItems.length,
-          itemsAboveMarket: 0,
-          riskScore: null,
+          itemsAboveMarket,
+          riskScore,
         },
       });
 
       this.logger.log(
-        `Analysis ${analysisId} complete: ${extractedItems.length} items`,
+        `Analysis ${analysisId} complete: ${extractedItems.length} items, ` +
+          `${itemsAboveMarket} above market, riskScore=${riskScore?.toFixed(3) ?? 'n/a'}`,
       );
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));

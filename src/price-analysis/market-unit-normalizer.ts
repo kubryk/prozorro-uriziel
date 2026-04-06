@@ -217,12 +217,10 @@ export function normalizeMarketPriceResult(
 
     return {
       ...result,
-      marketPrice: null,
-      marketPriceMin: null,
-      marketPriceMax: null,
+      normalizedToContractUnit: false,
       source: appendNote(
         result.source,
-        'Знайдено ціну за упаковку, але немає надійного переведення до одиниці договору.',
+        '⚠️ Ціна за упаковку — точне переведення до штуки невідоме.',
       ),
     };
   }
@@ -255,12 +253,10 @@ export function normalizeMarketPriceResult(
 
     return {
       ...result,
-      marketPrice: null,
-      marketPriceMin: null,
-      marketPriceMax: null,
+      normalizedToContractUnit: false,
       source: appendNote(
         result.source,
-        'Знайдено ціну за штуку, але немає надійного переведення до одиниці договору.',
+        '⚠️ Ціна за штуку — точне переведення до упаковки невідоме.',
       ),
     };
   }
